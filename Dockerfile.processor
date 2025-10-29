@@ -1,0 +1,27 @@
+FROM python:3.10-slim
+
+WORKDIR /app
+
+RUN apt-get update && apt-get install -y \
+    libgl1 \
+    libglib2.0-0 \
+    libsm6 \
+    libxext6 \
+    libxrender-dev \
+    libgomp1 \
+    libpq-dev \
+    gcc \
+    g++ \
+    && rm -rf /var/lib/apt/lists/*
+
+COPY config/requirements.txt /app/config/requirements.txt
+RUN pip install --no-cache-dir -r config/requirements.txt
+
+COPY processors/ /app/processors/
+COPY services/ /app/services/
+
+RUN mkdir -p /app/static/detections /app/models
+
+ENV PYTHONUNBUFFERED=1
+
+CMD ["python", "-u", "services/people_counter_service.py"]

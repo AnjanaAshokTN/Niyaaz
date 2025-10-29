@@ -1,0 +1,75 @@
+version: '3'
+
+services:
+  postgres:
+    container_name: sakshi-postgres
+    image: postgres:13
+    environment:
+      POSTGRES_DB: sakshi_ai
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: password
+    volumes:
+      - pgdata:/var/lib/postgresql/data
+    networks:
+      - sakshi-network
+
+  main-app:
+    container_name: sakshi-main-app
+    build:
+      context: .
+      dockerfile: Dockerfile.main
+    ports:
+      - "5001:5001"
+    depends_on:
+      - postgres
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/sakshi_ai
+      - DOCKER_MODE=true
+    volumes:
+      - ./config:/app/config
+      - ./videos:/app/videos
+    networks:
+      - sakshi-network
+
+  people-counter-processor:
+    container_name: sakshi-people-counter
+    build:
+      context: .
+      dockerfile: Dockerfile.processor
+    volumes:
+      - ./config:/app/config
+      - ./videos:/app/videos
+      - ./models:/app/models
+    depends_on:
+      - postgres
+      - main-app
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/sakshi_ai
+      - PROCESSOR_TYPE=people_counter
+    networks:
+      - sakshi-network
+
+  bag-detection-processor:
+    container_name: sakshi-bag-detection
+    build:
+      context: .
+      dockerfile: Dockerfile.processor
+    volumes:
+      - ./config:/app/config
+      - ./videos:/app/videos
+      - ./models:/app/models
+    depends_on:
+      - postgres
+      - main-app
+    environment:
+      - DATABASE_URL=postgresql://postgres:password@postgres:5432/sakshi_ai
+      - PROCESSOR_TYPE=bag_detection
+    networks:
+      - sakshi-network
+
+networks:
+  sakshi-network:
+    driver: bridge
+
+volumes:
+  pgdata:
