@@ -1,0 +1,128 @@
+{
+  "channels": [
+    {
+      "channel_id": "camera_1",
+      "channel_name": "Take Away Counter (Demo)",
+      "video_file": "videos/demo_queue.mp4",
+      "rtsp_url": "",
+      "enabled": true,
+      "modules": [
+        {
+          "type": "QueueMonitor",
+          "config": {
+            "queue_roi": {
+              "points": [
+                { "x": 0.203, "y": 0.778 },
+                { "x": 0.310, "y": 0.052 },
+                { "x": 0.178, "y": 0.030 },
+                { "x": 0.000, "y": 0.526 },
+                { "x": -0.008, "y": 1.009 },
+                { "x": 0.200, "y": 0.995 }
+              ]
+            },
+            "counter_roi": {
+              "points": [
+                { "x": 0.5, "y": 0.5 },
+                { "x": 0.7, "y": 0.5 },
+                { "x": 0.7, "y": 0.8 },
+                { "x": 0.5, "y": 0.8 }
+              ]
+            },
+            "settings": {
+              "dwell_time_threshold": 0.0,
+              "queue_alert_threshold": 3,
+              "counter_threshold": 1,
+              "wait_time_threshold": 0.0,
+              "alert_cooldown": 60
+            }
+          }
+        },
+        {
+          "type": "DressCodeMonitoring",
+          "config": {
+            "uniform_only": true,
+            "enable_hairnet_check": false,
+            "require_hairnet": false,
+            "required_items": {
+              "apron": false,
+              "gloves": false,
+              "hairnet": false
+            }
+          }
+        },
+        {
+          "type": "CashDetection",
+          "config": {}
+        },
+        {
+          "type": "SmokingDetection",
+          "config": {}
+        }
+      ]
+    },
+    {
+      "channel_id": "camera_2",
+      "channel_name": "Deluxe Counter (Demo)",
+      "video_file": "videos/demo_uniform.mp4",
+      "rtsp_url": "",
+      "enabled": true,
+      "modules": [
+        {
+          "type": "QueueMonitor",
+          "config": {
+            "queue_roi": {
+              "points": [
+                { "x": 0.255, "y": 0.356 },
+                { "x": 0.837, "y": 0.643 },
+                { "x": 0.653, "y": 0.995 },
+                { "x": 0.999, "y": 0.983 },
+                { "x": 0.998, "y": 0.346 },
+                { "x": 0.220, "y": 0.119 },
+                { "x": -0.004, "y": 0.250 },
+                { "x": 0.002, "y": 0.517 }
+              ]
+            },
+            "counter_roi": {
+              "points": [{ "x": 0.00322265625, "y": 0.6983223764519942 },
+                { "x": 0.26259765625, "y": 0.37595395539936266 },
+                { "x": 0.81259765625, "y": 0.6720065869783101 },
+                { "x": 0.54697265625, "y": 0.9983223764519943 },
+                { "x": 0, "y": 0.9944901315789474 }
+]
+            },
+            "settings": {
+              "dwell_time_threshold": 0.0,
+              "queue_alert_threshold": 3,
+              "counter_threshold": 1,
+              "wait_time_threshold": 0.0,
+              "alert_cooldown": 60
+            }
+          }
+        },
+        {
+          "type": "DressCodeMonitoring",
+          "config": {
+            "uniform_only": true,
+            "enable_hairnet_check": false,
+            "require_hairnet": false,
+            "required_items": {
+              "apron": false,
+              "gloves": false,
+              "hairnet": false
+            }
+          }
+        },
+        {
+          "type": "CashDetection",
+          "config": {}
+        },
+        {
+          "type": "SmokingDetection",
+          "config": {}
+        }
+      ]
+    }
+  ]
+}
+
+

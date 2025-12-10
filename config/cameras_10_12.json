@@ -1,0 +1,104 @@
+{
+  "channels": [
+    {
+      "channel_id": "camera_10",
+      "channel_name": "Kitchen 2",
+      "rtsp_url": "rtsp://admin:Niyaaz%401166@115.247.213.246:554/cam/realmonitor?channel=10&subtype=1",
+      "enabled": true,
+      "modules": [
+        {
+          "type": "DressCodeMonitoring",
+          "config": {
+            "enable_hairnet_check": true,
+            "require_hairnet": true,
+            "required_items": {
+              "apron": true,
+              "gloves": true,
+              "hairnet": true
+            },
+            "settings": {
+              "alert_cooldown": 30.0,
+              "violation_duration_threshold": 2.0,
+              "conf_threshold": 0.5
+            }
+          }
+        },
+        {
+          "type": "SmokingDetection",
+          "config": {
+            "conf_threshold": 0.4,
+            "alert_cooldown": 30.0,
+            "detection_duration_threshold": 2.0
+          }
+        }
+      ]
+    },
+    {
+      "channel_id": "camera_11",
+      "channel_name": "Kitchen 3",
+      "rtsp_url": "rtsp://admin:Niyaaz%401166@115.247.213.246:554/cam/realmonitor?channel=11&subtype=1",
+      "enabled": true,
+      "modules": [
+        {
+          "type": "DressCodeMonitoring",
+          "config": {
+            "enable_hairnet_check": true,
+            "require_hairnet": true,
+            "required_items": {
+              "apron": true,
+              "gloves": true,
+              "hairnet": true
+            },
+            "settings": {
+              "alert_cooldown": 30.0,
+              "violation_duration_threshold": 2.0,
+              "conf_threshold": 0.5
+            }
+          }
+        },
+        {
+          "type": "SmokingDetection",
+          "config": {
+            "conf_threshold": 0.4,
+            "alert_cooldown": 30.0,
+            "detection_duration_threshold": 2.0
+          }
+        }
+      ]
+    },
+    {
+      "channel_id": "camera_12",
+      "channel_name": "Kitchen 4",
+      "rtsp_url": "rtsp://admin:Niyaaz%401166@115.247.213.246:554/cam/realmonitor?channel=12&subtype=1",
+      "enabled": true,
+      "modules": [
+        {
+          "type": "DressCodeMonitoring",
+          "config": {
+            "enable_hairnet_check": true,
+            "require_hairnet": true,
+            "required_items": {
+              "apron": true,
+              "gloves": true,
+              "hairnet": true
+            },
+            "settings": {
+              "alert_cooldown": 30.0,
+              "violation_duration_threshold": 2.0,
+              "conf_threshold": 0.5
+            }
+          }
+        },
+        {
+          "type": "SmokingDetection",
+          "config": {
+            "conf_threshold": 0.4,
+            "alert_cooldown": 30.0,
+            "detection_duration_threshold": 2.0
+          }
+        }
+      ]
+    }
+  ]
+}
+

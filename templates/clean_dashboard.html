@@ -1,0 +1,385 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sakshi.AI - Video Analytics</title>
+    <style>
+        :root {
+            /* Dark theme palette (match main dashboard) */
+            --bg-primary: #0D1117;
+            --bg-secondary: #161B22;
+            --border-color: #30363D;
+            --text-primary: #C9D1D9;
+            --text-secondary: #8B949E;
+            --accent-color: #238636;
+            --accent-hover: #2EA043;
+            --danger-color: #da3633;
+        }
+        * { box-sizing: border-box; }
+        body {
+            margin: 0;
+            font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+            background-color: var(--bg-primary);
+            color: var(--text-primary);
+        }
+        .header {
+            padding: 14px 24px;
+            border-bottom: 1px solid var(--border-color);
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            background: rgba(13, 17, 23, 0.92);
+        }
+        .header-title {
+            font-size: 18px;
+            font-weight: 600;
+        }
+        .header-subtitle {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+        .user-info {
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+        .container {
+            max-width: 1400px;
+            margin: 0 auto;
+            padding: 20px;
+        }
+        .grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fit, minmax(320px, 1fr));
+            gap: 20px;
+        }
+        .card {
+            background-color: var(--bg-secondary);
+            border-radius: 10px;
+            border: 1px solid var(--border-color);
+            padding: 16px;
+            display: flex;
+            flex-direction: column;
+            gap: 10px;
+        }
+        .card-header {
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 4px;
+        }
+        .card-title {
+            font-size: 15px;
+            font-weight: 600;
+            display: flex;
+            align-items: center;
+            gap: 8px;
+        }
+        .card-title span.icon {
+            font-size: 18px;
+        }
+        .card-description {
+            font-size: 12px;
+            color: var(--text-secondary);
+        }
+        .controls {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+            margin: 6px 0;
+        }
+        select {
+            background-color: var(--bg-primary);
+            border: 1px solid var(--border-color);
+            color: var(--text-primary);
+            padding: 6px 10px;
+            border-radius: 6px;
+            font-size: 13px;
+        }
+        .btn {
+            padding: 6px 12px;
+            border-radius: 6px;
+            border: 1px solid var(--border-color);
+            background-color: #21262d;
+            color: var(--text-primary);
+            font-size: 13px;
+            cursor: pointer;
+        }
+        .btn-primary {
+            background-color: var(--accent-color);
+            border-color: var(--accent-color);
+            color: #fff;
+        }
+        .btn-primary:hover {
+            background-color: var(--accent-hover);
+            border-color: var(--accent-hover);
+        }
+        .btn-outline {
+            background-color: transparent;
+        }
+        .btn-outline.danger {
+            border-color: var(--danger-color);
+            color: var(--danger-color);
+        }
+        .video-wrapper {
+            border-radius: 8px;
+            overflow: hidden;
+            border: 1px solid var(--border-color);
+            margin-top: 6px;
+            background-color: #000;
+            min-height: 160px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }
+        .video-wrapper img {
+            width: 100%;
+            height: auto;
+            display: block;
+            object-fit: cover;
+        }
+        .placeholder {
+            font-size: 12px;
+            color: var(--text-secondary);
+            padding: 20px;
+            text-align: center;
+        }
+        .status-badge {
+            font-size: 11px;
+            color: var(--text-secondary);
+        }
+        .status-dot {
+            display: inline-block;
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background-color: var(--accent-color);
+            margin-right: 4px;
+        }
+    </style>
+</head>
+<body>
+    <header class="header">
+        <div>
+            <div class="header-title">Sakshi.AI – Video Analytics</div>
+            <div class="header-subtitle">Queue, Uniform & PPE, Cash Drawer, Smoke & Fire</div>
+        </div>
+        <div class="user-info">
+            {% if user %}
+                {{ user.username }} ({{ user.role }})
+            {% endif %}
+        </div>
+    </header>
+
+    <main class="container">
+        <div class="grid">
+            <!-- Queue & Wait Time -->
+            <section class="card" id="queue-card">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span class="icon">📊</span> Queue &amp; Wait Time
+                    </div>
+                    <div class="status-badge">
+                        <span class="status-dot"></span>Live
+                    </div>
+                </div>
+                <div class="card-description">
+                    Monitor queue length and counter staffing. ROI is required and already configured per camera.
+                </div>
+                <div class="controls">
+                    <label style="font-size: 12px;">Camera:</label>
+                    <select id="queue-channel-select">
+                        {% for cid, ch in app_configs['QueueMonitor']['channels'].items() %}
+                            <option value="{{ cid }}">{{ ch.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <button class="btn btn-primary" onclick="startModule('QueueMonitor','queue-channel-select','queue-video')">
+                        Start
+                    </button>
+                    <button class="btn btn-outline danger" onclick="stopModule('QueueMonitor','queue-channel-select')">
+                        Stop
+                    </button>
+                </div>
+                <div class="video-wrapper">
+                    <img id="queue-video" alt="Queue & Wait Time stream" src="" />
+                    <div class="placeholder" id="queue-placeholder">
+                        Select a camera and click <strong>Start</strong> to view the queue stream.
+                    </div>
+                </div>
+            </section>
+
+            <!-- Uniform & PPE Compliance -->
+            <section class="card" id="dresscode-card">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span class="icon">👔</span> Uniform &amp; PPE Compliance
+                    </div>
+                    <div class="status-badge">
+                        <span class="status-dot"></span>Live
+                    </div>
+                </div>
+                <div class="card-description">
+                    Monitor uniforms, aprons, gloves, and hairnets across counters and kitchens.
+                </div>
+                <div class="controls">
+                    <label style="font-size: 12px;">Camera:</label>
+                    <select id="dresscode-channel-select">
+                        {% for cid, ch in app_configs['DressCodeMonitoring']['channels'].items() %}
+                            <option value="{{ cid }}">{{ ch.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <button class="btn btn-primary" onclick="startModule('DressCodeMonitoring','dresscode-channel-select','dresscode-video')">
+                        Start
+                    </button>
+                    <button class="btn btn-outline danger" onclick="stopModule('DressCodeMonitoring','dresscode-channel-select')">
+                        Stop
+                    </button>
+                </div>
+                <div class="video-wrapper">
+                    <img id="dresscode-video" alt="Uniform & PPE stream" src="" />
+                    <div class="placeholder" id="dresscode-placeholder">
+                        Select a camera and click <strong>Start</strong> to view uniform &amp; PPE compliance.
+                    </div>
+                </div>
+            </section>
+
+            <!-- Cash Drawer Monitoring -->
+            <section class="card" id="cash-card">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span class="icon">💵</span> Cash Drawer Monitoring
+                    </div>
+                    <div class="status-badge">
+                        <span class="status-dot"></span>Live
+                    </div>
+                </div>
+                <div class="card-description">
+                    Detect cash and open drawers at counters to audit transactions.
+                </div>
+                <div class="controls">
+                    <label style="font-size: 12px;">Camera:</label>
+                    <select id="cash-channel-select">
+                        {% for cid, ch in app_configs['CashDetection']['channels'].items() %}
+                            <option value="{{ cid }}">{{ ch.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <button class="btn btn-primary" onclick="startModule('CashDetection','cash-channel-select','cash-video')">
+                        Start
+                    </button>
+                    <button class="btn btn-outline danger" onclick="stopModule('CashDetection','cash-channel-select')">
+                        Stop
+                    </button>
+                </div>
+                <div class="video-wrapper">
+                    <img id="cash-video" alt="Cash drawer stream" src="" />
+                    <div class="placeholder" id="cash-placeholder">
+                        Select a camera and click <strong>Start</strong> to monitor the cash drawer.
+                    </div>
+                </div>
+            </section>
+
+            <!-- Smoke & Fire Detection -->
+            <section class="card" id="smoke-card">
+                <div class="card-header">
+                    <div class="card-title">
+                        <span class="icon">🔥</span> Smoke &amp; Fire Detection
+                    </div>
+                    <div class="status-badge">
+                        <span class="status-dot"></span>Live
+                    </div>
+                </div>
+                <div class="card-description">
+                    Detect smoke and fire events for early safety alerts.
+                </div>
+                <div class="controls">
+                    <label style="font-size: 12px;">Camera:</label>
+                    <select id="smoke-channel-select">
+                        {% for cid, ch in app_configs['SmokingDetection']['channels'].items() %}
+                            <option value="{{ cid }}">{{ ch.name }}</option>
+                        {% endfor %}
+                    </select>
+                    <button class="btn btn-primary" onclick="startModule('SmokingDetection','smoke-channel-select','smoke-video')">
+                        Start
+                    </button>
+                    <button class="btn btn-outline danger" onclick="stopModule('SmokingDetection','smoke-channel-select')">
+                        Stop
+                    </button>
+                </div>
+                <div class="video-wrapper">
+                    <img id="smoke-video" alt="Smoke & Fire stream" src="" />
+                    <div class="placeholder" id="smoke-placeholder">
+                        Select a camera and click <strong>Start</strong> to view smoke &amp; fire detection.
+                    </div>
+                </div>
+            </section>
+        </div>
+    </main>
+
+    <script>
+        async function startModule(appName, selectId, imgId) {
+            const select = document.getElementById(selectId);
+            const channelId = select.value;
+            if (!channelId) return;
+
+            try {
+                const payload = {
+                    app_name: appName,
+                    channel_id: channelId
+                };
+                const res = await fetch('/api/start_channel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (!data.success) {
+                    console.error('Failed to start channel', data);
+                    alert('Failed to start channel: ' + (data.error || 'Unknown error'));
+                    return;
+                }
+
+                const img = document.getElementById(imgId);
+                const placeholder = document.getElementById(imgId.replace('-video', '-placeholder'));
+                if (img) {
+                    img.src = `/video_feed/${appName}/${channelId}?t=` + Date.now();
+                }
+                if (placeholder) {
+                    placeholder.style.display = 'none';
+                }
+            } catch (err) {
+                console.error('Error starting module', err);
+                alert('Error starting module: ' + err.message);
+            }
+        }
+
+        async function stopModule(appName, selectId) {
+            const select = document.getElementById(selectId);
+            const channelId = select.value;
+            if (!channelId) return;
+
+            try {
+                const payload = {
+                    app_name: appName,
+                    channel_id: channelId
+                };
+                const res = await fetch('/api/stop_channel', {
+                    method: 'POST',
+                    headers: { 'Content-Type': 'application/json' },
+                    body: JSON.stringify(payload)
+                });
+                const data = await res.json();
+                if (!data.success) {
+                    console.error('Failed to stop channel', data);
+                    alert('Failed to stop channel: ' + (data.error || 'Unknown error'));
+                }
+            } catch (err) {
+                console.error('Error stopping module', err);
+                alert('Error stopping module: ' + err.message);
+            }
+        }
+    </script>
+</body>
+</html>
+
+

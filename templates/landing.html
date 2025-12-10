@@ -1,0 +1,139 @@
+<!DOCTYPE html>
+<html lang="en" class="scroll-smooth">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Sakshi.AI - Intelligent Video Analytics</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="preconnect" href="https://fonts.googleapis.com">
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;900&display=swap" rel="stylesheet">
+    <style>
+        body { background-color: #0D1117; color: #C9D1D9; font-family: 'Inter', sans-serif; }
+        .glass-nav { background: rgba(13, 17, 23, 0.6); backdrop-filter: blur(10px); -webkit-backdrop-filter: blur(10px); border-bottom: 1px solid rgba(255, 255, 255, 0.1); }
+        .hero-glow { background: radial-gradient(ellipse 50% 50% at 50% 50%, rgba(59, 130, 246, 0.15), rgba(13, 17, 23, 0)); }
+        .btn-primary { background: #238636; transition: all 0.3s ease; box-shadow: 0 0 15px rgba(35, 134, 54, 0.4); }
+        .btn-primary:hover { background: #2ea043; box-shadow: 0 0 25px rgba(46, 160, 67, 0.6); transform: translateY(-2px); }
+        .feature-card { background: #161B22; border: 1px solid #30363D; transition: all 0.3s ease; }
+        .feature-card:hover { transform: translateY(-8px); border-color: #238636; }
+        .scroll-animation { opacity: 0; transform: translateY(30px); transition: opacity 0.6s ease-out, transform 0.6s ease-out; }
+        .scroll-animation.visible { opacity: 1; transform: translateY(0); }
+        #hero-canvas { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: -1; }
+    </style>
+</head>
+<body class="antialiased">
+
+    <header id="header" class="glass-nav fixed top-0 left-0 right-0 z-50 transition-all duration-300">
+        <div class="container mx-auto px-6 py-4 flex justify-between items-center">
+            <div class="flex items-center space-x-3">
+                <svg class="w-8 h-8 text-green-500" viewBox="0 0 24 24" fill="none" xmlns="http://www.w3.org/2000/svg"><path d="M12 2C6.48 2 2 6.48 2 12C2 17.52 6.48 22 12 22C17.52 22 22 17.52 22 12C22 6.48 17.52 2 12 2ZM12 18.5C8.97 18.5 6.5 16.03 6.5 13H8.5C8.5 14.93 10.07 16.5 12 16.5C13.93 16.5 15.5 14.93 15.5 13C15.5 11.07 13.93 9.5 12 9.5C10.07 9.5 8.5 11.07 8.5 13H6.5C6.5 9.97 8.97 7.5 12 7.5C15.03 7.5 17.5 9.97 17.5 13C17.5 16.03 15.03 18.5 12 18.5Z" fill="currentColor"/></svg>
+                <h1 class="text-2xl font-bold text-white">Sakshi<span class="text-green-500">.AI</span></h1>
+            </div>
+            <nav class="hidden md:flex items-center space-x-8">
+                <a href="#features" class="text-gray-300 hover:text-green-500 transition">Features</a>
+                <a href="#about" class="text-gray-300 hover:text-green-500 transition">About</a>
+                <span class="text-xs text-gray-500">Powered by ThinkNeural.AI</span>
+            </nav>
+            <a href="/dashboard" class="btn-primary text-white font-semibold py-2 px-5 rounded-lg">Launch Dashboard</a>
+        </div>
+    </header>
+
+    <section class="h-screen flex items-center justify-center text-center relative overflow-hidden hero-glow">
+        <canvas id="hero-canvas"></canvas>
+        <div class="z-10 px-4">
+            <h2 class="text-5xl md:text-7xl font-black text-white leading-tight mb-4">The All-Seeing Eye, <br class="hidden md:block" /> <span class="text-green-500">Reimagined.</span></h2>
+            <p class="text-lg md:text-xl text-gray-400 max-w-3xl mx-auto mb-8">Sakshi.AI offers a unified suite of real-time video analytics, turning any CCTV into a smart, proactive security and business intelligence tool.</p>
+            <a href="/dashboard" class="btn-primary text-white font-bold py-4 px-8 rounded-lg text-lg inline-block">Go to Live Analytics</a>
+        </div>
+    </section>
+
+    <section id="features" class="py-24 bg-[#0D1117]">
+        <div class="container mx-auto px-6">
+            <div class="text-center mb-16">
+                <h3 class="text-4xl font-bold text-white">Analytics Modules</h3>
+                <p class="text-gray-400 mt-2">Unlock insights from every frame.</p>
+            </div>
+            <div class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-8">
+                <div class="feature-card rounded-lg p-8 text-center scroll-animation"><h4 class="text-xl font-bold text-white mb-2">People Counter</h4><p class="text-gray-400 text-sm">Measure footfall with precision. Track entry and exit trends to understand customer flow and peak hours.</p></div>
+                <div class="feature-card rounded-lg p-8 text-center scroll-animation"><h4 class="text-xl font-bold text-white mb-2">Queue Monitor</h4><p class="text-gray-400 text-sm">Monitor queue length and wait times. Get alerts when staffing is needed to improve customer experience.</p></div>
+                <div class="feature-card rounded-lg p-8 text-center scroll-animation"><h4 class="text-xl font-bold text-white mb-2">Heatmap Analysis</h4><p class="text-gray-400 text-sm">Visualize customer engagement. Discover popular zones and dead spots to optimize layout and product placement.</p></div>
+                <div class="feature-card rounded-lg p-8 text-center scroll-animation"><h4 class="text-xl font-bold text-white mb-2">Custom Detection</h4><p class="text-gray-400 text-sm">From security monitoring to any custom object detection, our platform is adaptable to your unique business needs.</p></div>
+            </div>
+        </div>
+    </section>
+    
+    <section id="about" class="py-24 bg-[#161B22]">
+        <div class="container mx-auto px-6 grid md:grid-cols-2 gap-12 items-center">
+            <div class="scroll-animation">
+                <h3 class="text-4xl font-bold text-white mb-4">The Digital Witness</h3>
+                <p class="text-gray-400 mb-4">Sakshi, meaning 'witness' in Sanskrit, embodies our mission to create an observant, intelligent, and tireless digital witness for your physical spaces.</p>
+                <p class="text-gray-400">Developed by the innovative minds at <span class="font-semibold text-green-500">ThinkNeural.AI</span>, our platform leverages state-of-the-art deep learning to provide insights that were once impossible, transforming security from a reactive measure to a proactive strategy.</p>
+            </div>
+            <div class="scroll-animation">
+                <img src="https://placehold.co/600x400/0D1117/238636?text=Sakshi.AI" alt="AI illustration" class="rounded-lg shadow-2xl">
+            </div>
+        </div>
+    </section>
+
+    <footer class="bg-[#0D1117] border-t border-t-[#30363D]">
+        <div class="container mx-auto px-6 py-8 text-center text-gray-400">
+            <p>&copy; 2025 ThinkNeural.AI. All rights reserved.</p>
+            <p class="text-sm mt-1">Sakshi.AI is a product of ThinkNeural.AI</p>
+        </div>
+    </footer>
+
+    <script>
+        const observer = new IntersectionObserver((entries) => {
+            entries.forEach(entry => {
+                if (entry.isIntersecting) {
+                    entry.target.classList.add('visible');
+                }
+            });
+        }, { threshold: 0.1 });
+        document.querySelectorAll('.scroll-animation').forEach(el => { observer.observe(el); });
+
+        const header = document.getElementById('header');
+        window.addEventListener('scroll', () => {
+            if (window.scrollY > 50) {
+                header.classList.add('py-2'); header.classList.remove('py-4');
+            } else {
+                header.classList.add('py-4'); header.classList.remove('py-2');
+            }
+        });
+
+        const canvas = document.getElementById('hero-canvas');
+        const ctx = canvas.getContext('2d');
+        let particles = [];
+        function resizeCanvas() { canvas.width = window.innerWidth; canvas.height = window.innerHeight; }
+        resizeCanvas();
+        window.addEventListener('resize', resizeCanvas);
+        class Particle {
+            constructor() {
+                this.x = Math.random() * canvas.width; this.y = Math.random() * canvas.height;
+                this.size = Math.random() * 2 + 1; this.speedX = Math.random() * 1 - 0.5;
+                this.speedY = Math.random() * 1 - 0.5; this.color = `rgba(35, 134, 54, ${Math.random()})`;
+            }
+            update() {
+                this.x += this.speedX; this.y += this.speedY;
+                if (this.size > 0.1) this.size -= 0.01;
+                if (this.x < 0 || this.x > canvas.width) this.speedX *= -1;
+                if (this.y < 0 || this.y > canvas.height) this.speedY *= -1;
+            }
+            draw() {
+                ctx.fillStyle = this.color; ctx.beginPath();
+                ctx.arc(this.x, this.y, this.size, 0, Math.PI * 2); ctx.fill();
+            }
+        }
+        function initParticles() { for (let i = 0; i < 100; i++) { particles.push(new Particle()); } }
+        initParticles();
+        function animateParticles() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+            for (let i = 0; i < particles.length; i++) {
+                particles[i].update(); particles[i].draw();
+            }
+            requestAnimationFrame(animateParticles);
+        }
+        animateParticles();
+    </script>
+</body>
+</html>

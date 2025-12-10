@@ -1,0 +1,95 @@
+{
+  "app": {
+    "name": "Sakshi.AI",
+    "version": "1.0.0",
+    "debug": true,
+    "host": "0.0.0.0",
+    "port": 5000
+  },
+  "database": {
+    "type": "postgresql",
+    "host": "localhost",
+    "port": 5432,
+    "name": "sakshiai",
+    "username": "postgres",
+    "password": "ajmal123",
+    "echo": false,
+    "note": "This config file is for reference only. Actual database URL is set in app.py line 33"
+  },
+  "detection": {
+    "confidence_threshold": 0.5,
+    "nms_threshold": 0.4,
+    "batch_size": 1
+  },
+  "people_counter": {
+    "default_orientation": "vertical",
+    "reset_counts_daily": true
+  },
+  "queue_monitor": {
+    "dwell_time_threshold": 3.0,
+    "queue_alert_threshold": 2,
+    "counter_threshold": 1,
+    "alert_cooldown": 180
+  },
+  "video_processing": {
+    "max_fps": 30,
+    "max_width": 1280,
+    "stream_fps": 15
+  },
+  "logging": {
+    "level": "INFO",
+    "max_file_size_mb": 100,
+    "backup_count": 5
+  },
+  "application": {
+    "name": "SakshiAI Analytics",
+    "version": "2.0",
+    "max_channels": 50,
+    "debug": false
+  },
+  "video": {
+    "default_resolution": "720p",
+    "fps": 30,
+    "buffer_size": 3,
+    "timeout_seconds": 30,
+    "retry_attempts": 5,
+    "connection_timeout": 30000
+  },
+  "performance": {
+    "max_concurrent_threads": 50,
+    "memory_limit_mb": 4096,
+    "gpu_memory_fraction": 0.7,
+    "optimization_enabled": true,
+    "max_queue_size": 10
+  },
+  "modules": {
+    "people_counter": {
+      "enabled": true,
+      "max_instances": 15
+    },
+    "queue_monitor": {
+      "enabled": true,
+      "max_instances": 15
+    },
+    "bag_detection": {
+      "enabled": true,
+      "max_instances": 15
+    },
+    "fall_detection": {
+      "enabled": true,
+      "max_instances": 15
+    },
+    "cash_detection": {
+      "enabled": true,
+      "max_instances": 15
+    },
+    "grooming_detection": {
+      "enabled": true,
+      "max_instances": 15
+    },
+    "heatmap_analytics": {
+      "enabled": true,
+      "max_instances": 15
+    }
+  }
+}

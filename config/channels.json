@@ -1,0 +1,642 @@
+{
+  "channels": [
+    {
+      "channel_id": "camera_1",
+      "channel_name": "Take Away Counter",
+      "rtsp_url": "rtsp://admin:Niyaaz%401166@115.247.213.246:554/cam/realmonitor?channel=1&subtype=1",
+      "video_file": "videos/channel1.avi",
+      "enabled": true,
+      "modules": [
+        {
+          "type": "QueueMonitor",
+          "config": {
+            "queue_roi": {
+              "points": [
+            {
+                  "x": 0.31781005859375,
+                  "y": 0.8971217105263158
+                },
+                {
+                  "x": 0.36468505859375,
+                  "y": 0.036595394736842105
+                },
+                {
+                  "x": 0.16702880859375,
+                  "y": 0.026069078947368422
+                },
+                {
+                  "x": 0,
+                  "y": 0.526
+                },
+                {
+                  "x": -0.008,
+                  "y": 1.009
+                },
+                {
+                  "x": 0.2,
+                  "y": 0.995
+                }
+                          ]
+            },
+            "counter_roi": {
+              "points": [
+                      {
+                            "x": 0.40791015625,
+                            "y": 0.05911183608205695
+                          },
+                          {
+                            "x": 0.99984130859375,
+                            "y": 0.04975328947368421
+                          },
+                          {
+                            "x": 0.99359130859375,
+                            "y": 0.9984375
+                          },
+                          {
+                            "x": 0.54697265625,
+                            "y": 0.9983223764519943
+                          },
+                          {
+                            "x": 0.44931640625,
+                            "y": 0.9956907975046259
+                          }
+              ]
+            },
+            "settings": {
+              "dwell_time_threshold": 10,
+              "queue_alert_threshold": 3,
+              "counter_threshold": 1,
+              "alert_cooldown": 60
+            }
+          }
+        },
+        {
+          "type": "DressCodeMonitoring",
+          "config": {
+            "uniform_only": true,
+            "enable_hairnet_check": false,
+            "require_hairnet": false,
+            "required_items": {
+              "apron": false,
+              "gloves": false,
+              "hairnet": false
+            },
+            "settings": {
+              "alert_cooldown": 30.0,
+              "violation_duration_threshold": 2.0,
+              "conf_threshold": 0.5
+            },
+            "counter_roi": {
+              "points": [
+                {
+                            "x": 0.40791015625,
+                            "y": 0.05911183608205695
+                          },
+                          {
+                            "x": 0.99984130859375,
+                            "y": 0.04975328947368421
+                          },
+                          {
+                            "x": 0.99359130859375,
+                            "y": 0.9984375
+                          },
+                          {
+                            "x": 0.54697265625,
+                            "y": 0.9983223764519943
+                          },
+                          {
+                            "x": 0.44931640625,
+                            "y": 0.9956907975046259
+                          }
+              ]
+            },
+            "allowed_uniforms": {
+              "counter": ["Uniform_grey", "Uniform_black"]
+            }
+          }
+        },
+        {
+          "type": "CashDetection",
+          "config": {
+            "conf_threshold": 0.4,
+            "alert_cooldown": 10.0,
+            "detection_duration_threshold": 1.0
+          }
+        },
+        {
+          "type": "SmokingDetection",
+          "config": {
+            "conf_threshold": 0.4,
+            "alert_cooldown": 30.0,
+            "detection_duration_threshold": 2.0
+          }
+        }
+      ]
+    },
+    {
+      "channel_id": "camera_2",
+      "channel_name": "Deluxe Counter",
+      "rtsp_url": "rtsp://admin:Niyaaz%401166@115.247.213.246:554/cam/realmonitor?channel=2&subtype=1",
+      "video_file": "videos/channel2.avi",
+      "enabled": true,
+      "modules": [
+        {
+          "type": "QueueMonitor",
+          "config": {
+            "queue_roi": {
+              "points": [
+                { "x": 0.255, "y": 0.356 },
+                { "x": 0.837, "y": 0.643 },
+                { "x": 0.653, "y": 0.995 },
+                { "x": 0.999, "y": 0.983 },
+                { "x": 0.998, "y": 0.346 },
+                { "x": 0.220, "y": 0.119 },
+                { "x": -0.004, "y": 0.250 },
+                { "x": 0.002, "y": 0.517 },
+                {"x": 0.15062255859375, "y": 0.4115953947368421}
+              ]
+            },
+            "counter_roi": {
+              "points": [    {
+                "x": 0.00843505859375,
+                "y": 0.5089638157894737
+              },
+              {
+                "x": 0.26259765625,
+                "y": 0.37595395539936266
+              },
+              {
+                "x": 0.83577880859375,
+                "y": 0.6629111842105263
+              },
+              {
+                "x": 0.65765380859375,
+                "y": 0.9997532894736842
+              },
+              {
+                "x": 0,
+                "y": 0.9944901315789474
+              }
+              ]
+            },
+            "settings": {
+              "dwell_time_threshold": 10,
+              "queue_alert_threshold": 3,
+              "counter_threshold": 1,
+              "alert_cooldown": 60
+            }
+          }
+        },
+        {
+          "type": "DressCodeMonitoring",
+          "config": {
+            "uniform_only": true,
+            "enable_hairnet_check": false,
+            "require_hairnet": false,
+            "required_items": {
+              "apron": false,
+              "gloves": false,
+              "hairnet": false
+            },
+            "counter_roi": {
+              "points": [
+                {
+                "x": 0.00843505859375,
+                "y": 0.5089638157894737
+              },
+              {
+                "x": 0.26259765625,
+                "y": 0.37595395539936266
+              },
+              {
+                "x": 0.83577880859375,
+                "y": 0.6629111842105263
+              },
+              {
+                "x": 0.65765380859375,
+                "y": 0.9997532894736842
+              },
+              {
+                "x": 0,
+                "y": 0.9944901315789474
+              }
+              ]
+            },
+            "allowed_uniforms": {
+              "counter": ["Uniform_grey"]
+            },
+            "settings": {
+              "alert_cooldown": 30.0,
+              "violation_duration_threshold": 2.0,
+              "conf_threshold": 0.5
+            }
+          }
+        },
+        {
+          "type": "CashDetection",
+          "config": {
+            "conf_threshold": 0.6,
+            "alert_cooldown": 10.0,
+            "detection_duration_threshold": 1.0
+          }
+        },
+        {
+          "type": "SmokingDetection",
+          "config": {
+            "conf_threshold": 0.4,
+            "alert_cooldown": 30.0,
+            "detection_duration_threshold": 2.0
+          }
+        }
+      ]
+    },
+    {
+      "channel_id": "camera_3",
+      "channel_name": "AC3",
+      "rtsp_url": "rtsp://admin:Niyaaz%401166@115.247.213.246:554/cam/realmonitor?channel=3&subtype=1",
+      "video_file": "videos/channel3.avi",
+      "enabled": true,
+      "modules": [
+        {
+          "type": "DressCodeMonitoring",
+          "config": {
+            "enable_hairnet_check": false,
+            "require_hairnet": false,
+            "required_items": {
+              "apron": false,
+              "gloves": false,
+              "hairnet": false
+            },
+            "settings": {
+              "alert_cooldown": 30.0,
+              "violation_duration_threshold": 2.0,
+              "conf_threshold": 0.5
+            }
+          }
+        },
+        {
+          "type": "SmokingDetection",
+          "config": {
+            "conf_threshold": 0.4,
+            "alert_cooldown": 30.0,
+            "detection_duration_threshold": 2.0
+          }
+        }
+      ]
+    },
+    {
+      "channel_id": "camera_4",
+      "channel_name": "AC Entrance",
+      "rtsp_url": "rtsp://admin:Niyaaz%401166@115.247.213.246:554/cam/realmonitor?channel=4&subtype=1",
+      "enabled": true,
+      "modules": [
+        {
+          "type": "DressCodeMonitoring",
+          "config": {
+            "enable_hairnet_check": false,
+            "require_hairnet": false,
+            "required_items": {
+              "apron": false,
+              "gloves": false,
+              "hairnet": false
+            },
+            "settings": {
+              "alert_cooldown": 30.0,
+              "violation_duration_threshold": 2.0,
+              "conf_threshold": 0.5
+            }
+          }
+        },
+        {
+          "type": "SmokingDetection",
+          "config": {
+            "conf_threshold": 0.4,
+            "alert_cooldown": 30.0,
+            "detection_duration_threshold": 2.0
+          }
+        }
+      ]
+    },
+    {
+      "channel_id": "camera_5",
+      "channel_name": "General 1",
+      "rtsp_url": "rtsp://admin:Niyaaz%401166@115.247.213.246:554/cam/realmonitor?channel=5&subtype=1",
+      "enabled": true,
+      "modules": [
+        {
+          "type": "DressCodeMonitoring",
+          "config": {
+            "enable_hairnet_check": false,
+            "require_hairnet": false,
+            "required_items": {
+              "apron": false,
+              "gloves": false,
+              "hairnet": false
+            },
+            "settings": {
+              "alert_cooldown": 30.0,
+              "violation_duration_threshold": 2.0,
+              "conf_threshold": 0.5
+            }
+          }
+        },
+        {
+          "type": "SmokingDetection",
+          "config": {
+            "conf_threshold": 0.4,
+            "alert_cooldown": 30.0,
+            "detection_duration_threshold": 2.0
+          }
+        }
+      ]
+    },
+    {
+      "channel_id": "camera_6",
+      "channel_name": "General 3",
+      "rtsp_url": "rtsp://admin:Niyaaz%401166@115.247.213.246:554/cam/realmonitor?channel=6&subtype=1",
+      "enabled": true,
+      "modules": [
+        {
+          "type": "DressCodeMonitoring",
+          "config": {
+            "enable_hairnet_check": false,
+            "require_hairnet": false,
+            "required_items": {
+              "apron": false,
+              "gloves": false,
+              "hairnet": false
+            },
+            "settings": {
+              "alert_cooldown": 30.0,
+              "violation_duration_threshold": 2.0,
+              "conf_threshold": 0.5
+            }
+          }
+        },
+        {
+          "type": "SmokingDetection",
+          "config": {
+            "conf_threshold": 0.4,
+            "alert_cooldown": 30.0,
+            "detection_duration_threshold": 2.0
+          }
+        }
+      ]
+    },
+    {
+      "channel_id": "camera_7",
+      "channel_name": "Deluxe 1",
+      "rtsp_url": "rtsp://admin:Niyaaz%401166@115.247.213.246:554/cam/realmonitor?channel=7&subtype=1",
+      "enabled": true,
+      "modules": [
+        {
+          "type": "DressCodeMonitoring",
+          "config": {
+            "enable_hairnet_check": false,
+            "require_hairnet": false,
+            "required_items": {
+              "apron": false,
+              "gloves": false,
+              "hairnet": false
+            },
+            "settings": {
+              "alert_cooldown": 30.0,
+              "violation_duration_threshold": 2.0,
+              "conf_threshold": 0.5
+            }
+          }
+        },
+        {
+          "type": "SmokingDetection",
+          "config": {
+            "conf_threshold": 0.4,
+            "alert_cooldown": 30.0,
+            "detection_duration_threshold": 2.0
+          }
+        }
+      ]
+    },
+    {
+      "channel_id": "camera_8",
+      "channel_name": "Deluxe 2",
+      "rtsp_url": "rtsp://admin:Niyaaz%401166@115.247.213.246:554/cam/realmonitor?channel=8&subtype=1",
+      "enabled": true,
+      "modules": [
+        {
+          "type": "DressCodeMonitoring",
+          "config": {
+            "enable_hairnet_check": false,
+            "require_hairnet": false,
+            "required_items": {
+              "apron": false,
+              "gloves": false,
+              "hairnet": false
+            },
+            "settings": {
+              "alert_cooldown": 30.0,
+              "violation_duration_threshold": 2.0,
+              "conf_threshold": 0.5
+            }
+          }
+        },
+        {
+          "type": "SmokingDetection",
+          "config": {
+            "conf_threshold": 0.4,
+            "alert_cooldown": 30.0,
+            "detection_duration_threshold": 2.0
+          }
+        }
+      ]
+    },
+    {
+      "channel_id": "camera_9",
+      "channel_name": "Kitchen",
+      "rtsp_url": "rtsp://admin:Niyaaz%401166@115.247.213.246:554/cam/realmonitor?channel=9&subtype=1",
+      "video_file": "videos/channel9.avi",
+      "enabled": true,
+      "modules": [
+        {
+          "type": "DressCodeMonitoring",
+          "config": {
+            "uniform_only": true,
+            "enable_hairnet_check": false,
+            "require_hairnet": false,
+            "required_items": {
+              "apron": false,
+              "gloves": false,
+              "hairnet": false
+            },
+            "settings": {
+              "alert_cooldown": 30.0,
+              "violation_duration_threshold": 2.0,
+              "conf_threshold": 0.5
+            }
+          }
+        },
+        {
+          "type": "PPEMonitoring",
+          "config": {
+            "required_items": {
+              "apron": true,
+              "gloves": false,
+              "hairnet": true
+            },
+            "settings": {
+              "alert_cooldown": 30.0,
+              "violation_duration_threshold": 2.0,
+              "conf_threshold": 0.5
+            }
+          }
+        },
+        {
+          "type": "SmokingDetection",
+          "config": {
+            "conf_threshold": 0.4,
+            "alert_cooldown": 30.0,
+            "detection_duration_threshold": 2.0
+          }
+        }
+      ]
+    },
+    {
+      "channel_id": "camera_10",
+      "channel_name": "Kitchen 2",
+      "rtsp_url": "rtsp://admin:Niyaaz%401166@115.247.213.246:554/cam/realmonitor?channel=10&subtype=1",
+      "video_file": "videos/channel10.avi",
+      "enabled": true,
+      "modules": [
+        {
+          "type": "DressCodeMonitoring",
+          "config": {
+            "uniform_only": true,
+            "enable_hairnet_check": false,
+            "require_hairnet": false,
+            "required_items": {
+              "apron": false,
+              "gloves": false,
+              "hairnet": false
+            },
+            "settings": {
+              "alert_cooldown": 30.0,
+              "violation_duration_threshold": 2.0,
+              "conf_threshold": 0.5
+            }
+          }
+        },
+        {
+          "type": "PPEMonitoring",
+          "config": {
+            "required_items": {
+              "apron": true,
+              "gloves": false,
+              "hairnet": true
+            },
+            "settings": {
+              "alert_cooldown": 30.0,
+              "violation_duration_threshold": 2.0,
+              "conf_threshold": 0.5
+            }
+          }
+        },
+        {
+          "type": "SmokingDetection",
+          "config": {
+            "conf_threshold": 0.4,
+            "alert_cooldown": 30.0,
+            "detection_duration_threshold": 2.0
+          }
+        }
+      ]
+    },
+    {
+      "channel_id": "camera_11",
+      "channel_name": "Kitchen 3",
+      "rtsp_url": "rtsp://admin:Niyaaz%401166@115.247.213.246:554/cam/realmonitor?channel=11&subtype=1",
+      "enabled": true,
+      "modules": [
+        {
+          "type": "DressCodeMonitoring",
+          "config": {
+            "uniform_only": true,
+            "enable_hairnet_check": false,
+            "require_hairnet": false,
+            "required_items": {
+              "apron": false,
+              "gloves": false,
+              "hairnet": false
+            },
+            "settings": {
+              "alert_cooldown": 30.0,
+              "violation_duration_threshold": 2.0,
+              "conf_threshold": 0.5
+            }
+          }
+        },
+        {
+          "type": "SmokingDetection",
+          "config": {
+            "conf_threshold": 0.4,
+            "alert_cooldown": 30.0,
+            "detection_duration_threshold": 2.0
+          }
+        }
+      ]
+    },
+    {
+      "channel_id": "camera_12",
+      "channel_name": "Kitchen 4",
+      "rtsp_url": "rtsp://admin:Niyaaz%401166@115.247.213.246:554/cam/realmonitor?channel=12&subtype=1",
+      "enabled": true,
+      "modules": [
+        {
+          "type": "DressCodeMonitoring",
+          "config": {
+            "uniform_only": true,
+            "enable_hairnet_check": false,
+            "require_hairnet": false,
+            "required_items": {
+              "apron": false,
+              "gloves": false,
+              "hairnet": false
+            },
+            "settings": {
+              "alert_cooldown": 30.0,
+              "violation_duration_threshold": 2.0,
+              "conf_threshold": 0.5
+            }
+          }
+        },
+        {
+          "type": "SmokingDetection",
+          "config": {
+            "conf_threshold": 0.4,
+            "alert_cooldown": 30.0,
+            "detection_duration_threshold": 2.0
+          }
+        }
+      ]
+    },
+    {
+      "channel_id": "camera_14",
+      "channel_name": "Parking Space",
+      "rtsp_url": "rtsp://admin:Niyaaz%401166@115.247.213.246:554/cam/realmonitor?channel=14&subtype=1",
+      "enabled": true,
+      "modules": [
+        {
+          "type": "CrowdDetection",
+          "config": {
+            "roi": {
+              "points": []
+            },
+            "settings": {
+              "crowd_threshold": 2,
+              "alert_cooldown": 60,
+              "dwell_time_threshold": 2.0
+            }
+          }
+        }
+      ]
+    }
+  ]
+}
