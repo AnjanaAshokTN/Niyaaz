@@ -102,16 +102,15 @@ class ServiceDisciplineMonitor:
 
         # Settings
         self.settings = {
-            "order_wait_threshold": 60.0,    # seconds - alert if order wait > threshold (default: 1 minute)
+            "order_wait_threshold": 300.0,   # seconds - alert if order wait > threshold (default: 5 minutes)
             "service_wait_threshold": 180.0, # seconds - alert if service wait > threshold (default: 3 minutes)
             "alert_cooldown": 300.0,         # seconds between repeated alerts
             "track_timeout": 15.0,           # seconds before removing stale tracks
             "interaction_distance": 200.0,   # pixels - waiter near customer for interaction
             "interaction_duration": 2.0,     # seconds - waiter must stay near customer this long
             "food_served_gap": 10.0,         # seconds - min gap between T_order_start and T_food_served
-            # Note: Only violations are saved to database - no need for save_all_snapshots
             # Legacy setting for backward compatibility
-            "wait_time_threshold": 60.0      # Alias for order_wait_threshold
+            "wait_time_threshold": 300.0     # Alias for order_wait_threshold (5 minutes)
         }
 
         # Event-based tracking per person (using track_id from DeepSORT)
@@ -691,14 +690,19 @@ class ServiceDisciplineMonitor:
         if self.db_manager:
             try:
                 # Save to table_service_violations table
-                self.db_manager.add_table_service_violation(
-                    channel_id=self.channel_id,
-                    table_id=table_id,
-                    waiting_time=waiting_time,
-                    snapshot_path=snapshot_path,
-                    timestamp=current_time,
-                    alert_data={"violation_type": "service_discipline", "waiting_time": waiting_time}
-                )
+                # Wrap in app context to avoid "Working outside of application context" error
+                if self.app:
+                    with self.app.app_context():
+                        self.db_manager.add_table_service_violation(
+                            channel_id=self.channel_id,
+                            table_id=table_id,
+                            waiting_time=waiting_time,
+                            snapshot_path=snapshot_path,
+                            timestamp=current_time,
+                            alert_data={"violation_type": "service_discipline", "waiting_time": waiting_time}
+                        )
+                else:
+                    logger.warning(f"[{self.channel_id}] ⚠️ Cannot save violation: Flask app context not available")
                 
                 # Also log to general alerts table for consistency with other modules
                 alert_message = f"Service discipline violation: Table {table_id} waiting {waiting_time:.1f}s"
@@ -764,6 +768,9 @@ class ServiceDisciplineMonitor:
             return frame
 
         try:
+            # Save a clean copy of the original frame for snapshots
+            # This ensures snapshots don't include annotations from other modules (e.g., queue monitor text)
+            clean_frame = frame.copy()
             h, w = frame.shape[:2]
             
             # 1. Detect persons using YOLOv11n.pt
@@ -828,8 +835,8 @@ class ServiceDisciplineMonitor:
             # Detect interactions and update events
             self._detect_interactions(current_time)
             
-            # Check for violations
-            self._check_violations(current_time, frame)
+            # Check for violations - use clean_frame for snapshots to avoid other modules' annotations
+            self._check_violations(current_time, clean_frame)
             
             # Clean up stale tracks
             self._cleanup_stale_tracks(now_ts)
@@ -1066,6 +1073,33 @@ class ServiceDisciplineMonitor:
                                             f"customer {customer_id} at table {table_id} "
                                             f"(service wait: {customer['service_wait_time']:.1f}s from order end)"
                                         )
+                                        
+                                        # Save completed order to database (all orders, not just violations)
+                                        if self.db_manager:
+                                            try:
+                                                current_dt = datetime.fromtimestamp(now_ts)
+                                                
+                                                if self.app:
+                                                    with self.app.app_context():
+                                                        self.db_manager.add_table_service_order(
+                                                            channel_id=self.channel_id,
+                                                            table_id=table_id,
+                                                            order_wait_time=customer.get("order_wait_time"),
+                                                            service_wait_time=customer.get("service_wait_time"),
+                                                            timestamp=current_dt,
+                                                            alert_data={
+                                                                "T_seated": customer.get("T_seated"),
+                                                                "T_order_start": customer.get("T_order_start"),
+                                                                "T_order_end": customer.get("T_order_end"),
+                                                                "T_food_served": customer.get("T_food_served"),
+                                                                "order_wait_time": customer.get("order_wait_time"),
+                                                                "service_wait_time": customer.get("service_wait_time")
+                                                            }
+                                                        )
+                                                else:
+                                                    logger.warning(f"[{self.channel_id}] ⚠️ Cannot save completed order: Flask app context not available")
+                                            except Exception as e:
+                                                logger.error(f"[{self.channel_id}] ❌ Failed to save completed order: {e}", exc_info=True)
                     else:
                         # Waiter moved away - clear interaction
                         if interaction_key in ongoing_interactions:
@@ -1255,24 +1289,30 @@ class ServiceDisciplineMonitor:
                 logger.info(f"[{self.channel_id}] 💾 Saving violation to database: Table {table_id}, {violation_type} = {wait_time:.1f}s")
                 
                 # Save to table_service_violations table
-                result = self.db_manager.add_table_service_violation(
-                    channel_id=self.channel_id,
-                    table_id=table_id,
-                    waiting_time=wait_time,
-                    snapshot_path=snapshot_path,
-                    timestamp=current_time,
-                    alert_data={
-                        "violation_type": violation_type,
-                        "wait_time": wait_time,
-                        "T_seated": customer.get("T_seated"),
-                        "T_order_start": customer.get("T_order_start"),
-                        "T_order_end": customer.get("T_order_end"),
-                        "T_food_served": customer.get("T_food_served"),
-                        "order_wait_time": customer.get("order_wait_time"),
-                        "service_wait_time": customer.get("service_wait_time")
-                    }
-                )
-                logger.info(f"[{self.channel_id}] ✅ Violation saved to table_service_violations: {result}")
+                # Wrap in app context to avoid "Working outside of application context" error
+                if self.app:
+                    with self.app.app_context():
+                        result = self.db_manager.add_table_service_violation(
+                            channel_id=self.channel_id,
+                            table_id=table_id,
+                            waiting_time=wait_time,
+                            snapshot_path=snapshot_path,
+                            timestamp=current_time,
+                            alert_data={
+                                "violation_type": violation_type,
+                                "wait_time": wait_time,
+                                "T_seated": customer.get("T_seated"),
+                                "T_order_start": customer.get("T_order_start"),
+                                "T_order_end": customer.get("T_order_end"),
+                                "T_food_served": customer.get("T_food_served"),
+                                "order_wait_time": customer.get("order_wait_time"),
+                                "service_wait_time": customer.get("service_wait_time")
+                            }
+                        )
+                        logger.info(f"[{self.channel_id}] ✅ Violation saved to table_service_violations: {result}")
+                else:
+                    logger.warning(f"[{self.channel_id}] ⚠️ Cannot save violation: Flask app context not available")
+                    result = None
                 
                 # Also log to general alerts table for consistency with other modules
                 # Determine the correct threshold based on violation type

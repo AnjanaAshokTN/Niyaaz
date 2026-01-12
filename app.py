@@ -2592,30 +2592,31 @@ def get_module_analytics(module_name):
                     excluded_types = {'unclean_table', 'slow_reset', 'wrong_uniform'}
                     
                     for violation in all_violations:
+                        # Robustly extract wait times from columns first (new fields)
+                        wt = None
+                        order_wt = None
+                        service_wt = None
+                        violation_type = None
+                        
+                        try:
+                            if violation.order_wait_time is not None:
+                                order_wt = float(violation.order_wait_time)
+                            if violation.service_wait_time is not None:
+                                service_wt = float(violation.service_wait_time)
+                            if violation.waiting_time is not None:
+                                wt = float(violation.waiting_time)
+                        except Exception:
+                            pass
+                        
+                        # Parse alert_data if available
                         if violation.alert_data:
                             try:
                                 alert_data = json.loads(violation.alert_data) if isinstance(violation.alert_data, str) else violation.alert_data
                                 violation_type = alert_data.get('violation_type')
-
+                                
                                 # Skip non-service discipline types stored in the same table
                                 if violation_type in excluded_types:
                                     continue
-
-                                # Robustly extract wait times from columns or alert_data
-                                wt = None
-                                order_wt = None
-                                service_wt = None
-                                
-                                # Try database columns first (new fields)
-                                try:
-                                    if violation.order_wait_time is not None:
-                                        order_wt = float(violation.order_wait_time)
-                                    if violation.service_wait_time is not None:
-                                        service_wt = float(violation.service_wait_time)
-                                    if violation.waiting_time is not None:
-                                        wt = float(violation.waiting_time)
-                                except Exception:
-                                    pass
                                 
                                 # Fallback to alert_data if columns not set
                                 if order_wt is None or service_wt is None:
@@ -2631,18 +2632,29 @@ def get_module_analytics(module_name):
                                                     wt = val
                                             except Exception:
                                                 pass
-
-                                # Match reports filtering: include if wait time > 0 OR explicitly service_discipline
-                                if (wt is not None and wt > 0) or (order_wt is not None and order_wt > 0) or (service_wt is not None and service_wt > 0) or (violation_type == 'service_discipline'):
-                                    relevant_violations.append(violation)
-                                    if wt is not None:
-                                        wait_times.append(wt)
-                                    if order_wt is not None and order_wt > 0:
-                                        order_wait_times.append(order_wt)
-                                    if service_wt is not None and service_wt > 0:
-                                        service_wait_times.append(service_wt)
                             except:
                                 pass
+                        
+                        # Include all records with wait times (both violations and completed orders)
+                        # If no alert_data/violation_type, it's a completed order (saved via add_table_service_order)
+                        if violation_type is None:
+                            # Completed order - include if has wait times
+                            if (order_wt is not None and order_wt > 0) or (service_wt is not None and service_wt > 0):
+                                relevant_violations.append(violation)
+                                if order_wt is not None and order_wt > 0:
+                                    order_wait_times.append(order_wt)
+                                if service_wt is not None and service_wt > 0:
+                                    service_wait_times.append(service_wt)
+                        else:
+                            # Has violation_type - include if wait time > 0 OR explicitly service_discipline
+                            if (wt is not None and wt > 0) or (order_wt is not None and order_wt > 0) or (service_wt is not None and service_wt > 0) or (violation_type == 'service_discipline'):
+                                relevant_violations.append(violation)
+                                if wt is not None:
+                                    wait_times.append(wt)
+                                if order_wt is not None and order_wt > 0:
+                                    order_wait_times.append(order_wt)
+                                if service_wt is not None and service_wt > 0:
+                                    service_wait_times.append(service_wt)
                     
                     total_alerts = len(relevant_violations)
                     
@@ -3723,22 +3735,38 @@ def get_smoking_snapshots():
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/delete_smoking_snapshot/<int:snapshot_id>', methods=['DELETE'])
+@login_required
 def delete_smoking_snapshot(snapshot_id):
     """Delete a smoking detection snapshot"""
     try:
-        # Implementation would delete from DB and file system
-        return jsonify({'success': True, 'message': 'Snapshot deleted'})
+        with app.app_context():
+            success = db_manager.delete_smoking_snapshot(snapshot_id)
+            if success:
+                return jsonify({'success': True, 'message': 'Snapshot deleted successfully'})
+            else:
+                return jsonify({'success': False, 'error': 'Snapshot not found'})
     except Exception as e:
+        logger.error(f"Error deleting smoking snapshot: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/clear_old_smoking_snapshots', methods=['POST'])
+@login_required
 def clear_old_smoking_snapshots():
     """Clear old smoking detection snapshots"""
     try:
-        days = request.json.get('days', 7)
-        # Implementation would delete old snapshots
-        return jsonify({'success': True, 'message': f'Cleared snapshots older than {days} days'})
+        data = request.json or {}
+        days = int(data.get('days', 7))
+        
+        with app.app_context():
+            deleted_count = db_manager.clear_old_smoking_snapshots(days)
+        
+        return jsonify({
+            'success': True,
+            'deleted_count': deleted_count,
+            'message': f'Deleted {deleted_count} snapshots older than {days} days'
+        })
     except Exception as e:
+        logger.error(f"Error clearing old smoking snapshots: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/update_smoking_detection_config', methods=['POST'])

@@ -29,32 +29,39 @@ from .yolo_detector import YOLODetector
 logger = logging.getLogger(__name__)
 
 # Optional Telegram integration (configured via environment variables)
-TELEGRAM_BOT_TOKEN = os.getenv("bot_token")
-TELEGRAM_CHAT_ID = os.getenv("chat_id")
+# Support both naming conventions: bot_token/chat_id and TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN") or os.getenv("bot_token")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID") or os.getenv("chat_id")
 
 
-def send_telegram_message(text: str) -> None:
+def send_telegram_message(text: str) -> bool:
     """
     Send a message to a Telegram chat.
 
-    Uses environment variables:
-      - bot_token
-      - chat_id
+    Uses environment variables (checks both naming conventions):
+      - TELEGRAM_BOT_TOKEN or bot_token
+      - TELEGRAM_CHAT_ID or chat_id
 
-    If these are not set, this is a no-op.
+    Returns:
+        True if message was sent successfully, False otherwise
     """
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        logger.debug("Telegram credentials not set; skipping Telegram notification")
-        return
+        logger.warning("⚠️ Telegram credentials not set (bot_token or chat_id missing); skipping Telegram notification")
+        return False
 
     try:
         url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
         data = {"chat_id": TELEGRAM_CHAT_ID, "text": text}
         resp = requests.post(url, data=data, timeout=5)
-        if resp.status_code != 200:
-            logger.warning(f"Telegram API error: {resp.text}")
+        if resp.status_code == 200:
+            logger.info("✅ Telegram message sent successfully")
+            return True
+        else:
+            logger.error(f"❌ Telegram API error: {resp.status_code} - {resp.text}")
+            return False
     except Exception as e:
-        logger.error(f"Error sending Telegram message: {e}")
+        logger.error(f"❌ Error sending Telegram message: {e}")
+        return False
 
 
 class QueueMonitor:
@@ -97,7 +104,7 @@ class QueueMonitor:
         # Settings (overridable via set_settings / DB)
         self.settings = {
             "dwell_time_threshold": 0.0,   # For counter area (instant counting for staff)
-            "queue_dwell_time_threshold": 2.0,  # For queue area (filter out passing people - must stay 2+ seconds)
+            "queue_dwell_time_threshold": 5.0,  # For queue area (filter out passing people - must stay 5+ seconds to be counted)
             "queue_alert_threshold": 3,    # V1: queue > 3
             "counter_threshold": 1,        # V3: need at least 1 at counter
             "alert_cooldown": 60.0,        # seconds between alerts
@@ -212,7 +219,7 @@ class QueueMonitor:
                 if "dwell_time_threshold" not in self.settings:
                     self.settings["dwell_time_threshold"] = 0.0  # Counter area: instant counting
                 if "queue_dwell_time_threshold" not in self.settings:
-                    self.settings["queue_dwell_time_threshold"] = 2.0  # Queue area: 2 seconds minimum
+                    self.settings["queue_dwell_time_threshold"] = 5.0  # Queue area: 5 seconds minimum to filter passing people
 
             logger.info(f"[{self.channel_id}] Loaded configuration from DB")
         except Exception as e:
@@ -281,27 +288,52 @@ class QueueMonitor:
         x1, y1, x2, y2 = bbox
         min_x, min_y, max_x, max_y = roi_bbox
         
-        # Quick bbox check first
+        # Quick bbox check first - but be more forgiving (allow partial overlap)
+        # If bbox is completely outside ROI bbox, definitely not in ROI
         if x2 < min_x or x1 > max_x or y2 < min_y or y1 > max_y:
             return False
         
-        # Check multiple points of the person's bbox
-        # For counter area, we want to be more forgiving - check center and bottom points
+        # For counter area, be very forgiving - check multiple points including top of bbox
+        # Staff may be standing behind counter, so we check:
+        # - Center point (most reliable)
+        # - Top center (head position - staff behind counter)
+        # - Bottom center (feet position)
+        # - Top-left and top-right corners (for staff at edges)
         bbox_center = ((x1 + x2) / 2, (y1 + y2) / 2)
+        bbox_top_center = ((x1 + x2) / 2, y1)  # Head position - important for staff behind counter
         bbox_bottom_center = ((x1 + x2) / 2, y2)
+        bbox_top_left = (x1, y1)
+        bbox_top_right = (x2, y1)
         bbox_bottom_left = (x1, y2)
         bbox_bottom_right = (x2, y2)
         
         # Check if any of these key points are in the ROI
-        points_to_check = [bbox_center, bbox_bottom_center, bbox_bottom_left, bbox_bottom_right]
+        # Prioritize center and top-center (most reliable for staff detection)
+        points_to_check = [
+            bbox_center,      # Most reliable
+            bbox_top_center,  # Important for staff behind counter
+            bbox_bottom_center,
+            bbox_top_left,
+            bbox_top_right,
+            bbox_bottom_left,
+            bbox_bottom_right
+        ]
         
         points_in_roi = 0
         for px, py in points_to_check:
             if cv2.pointPolygonTest(roi_polygon, (float(px), float(py)), False) >= 0:
                 points_in_roi += 1
         
-        # If at least 2 points (50%) are in ROI, consider it a match
-        # This is more forgiving for staff who may be partially at the edge
+        # If center point OR top-center is in ROI, consider it a match
+        # This is very forgiving for staff who may be standing behind the counter
+        center_in = cv2.pointPolygonTest(roi_polygon, (float(bbox_center[0]), float(bbox_center[1])), False) >= 0
+        top_center_in = cv2.pointPolygonTest(roi_polygon, (float(bbox_top_center[0]), float(bbox_top_center[1])), False) >= 0
+        
+        if center_in or top_center_in:
+            return True
+        
+        # Otherwise, require at least 2 points (30% of checked points) to be in ROI
+        # This handles edge cases where staff are partially visible
         return points_in_roi >= 2
 
     # ------------------------------------------------------------------ #
@@ -348,9 +380,40 @@ class QueueMonitor:
             # Use bbox overlap check for counter - more forgiving for staff at edges
             elif counter_roi:
                 # Use bbox overlap for counter (more forgiving for staff behind counter)
+                # Use very low overlap ratio (0.1 = 10%) to catch staff who are mostly in ROI
                 in_counter = self._bbox_overlaps_roi(
-                    det["bbox"], counter_roi["polygon"], counter_roi["bbox"], min_overlap_ratio=0.3
+                    det["bbox"], counter_roi["polygon"], counter_roi["bbox"], min_overlap_ratio=0.1
                 )
+                
+                # Also check if person's center point is near the counter ROI (within 100 pixels)
+                # This helps catch staff who are slightly outside the ROI but clearly at the counter
+                # Increased from 50 to 100 pixels to be more forgiving for seated staff
+                if not in_counter:
+                    center = det.get("center")
+                    if center:
+                        # Check distance from center to ROI polygon
+                        dist = cv2.pointPolygonTest(counter_roi["polygon"], (float(center[0]), float(center[1])), True)
+                        # If within 100 pixels of ROI edge, consider them at counter
+                        if dist > -100:  # Negative means outside, but if within 100px, count it
+                            in_counter = True
+                            if self.frame_count <= 10 or self.frame_count % 60 == 0:
+                                logger.info(f"  Person near counter ROI (within 100px): center={center}, dist={dist:.1f}px")
+                
+                # Also check if any part of the bbox (top, center, bottom) is in the ROI
+                # This is especially important for seated staff whose bbox might be positioned differently
+                if not in_counter:
+                    x1, y1, x2, y2 = det["bbox"]
+                    bbox_top = ((x1 + x2) / 2, y1)
+                    bbox_center = det.get("center", ((x1 + x2) / 2, (y1 + y2) / 2))
+                    bbox_bottom = ((x1 + x2) / 2, y2)
+                    
+                    # Check if any key point is in ROI
+                    for point in [bbox_top, bbox_center, bbox_bottom]:
+                        if cv2.pointPolygonTest(counter_roi["polygon"], (float(point[0]), float(point[1])), False) >= 0:
+                            in_counter = True
+                            if self.frame_count <= 10 or self.frame_count % 60 == 0:
+                                logger.info(f"  Person detected in counter via point check: point={point}")
+                            break
                 
                 if in_counter:
                     det["area_type"] = "counter"
@@ -517,19 +580,33 @@ class QueueMonitor:
                     "counted": False,
                     "matched": True,
                     "area_type": area_type,
+                    "previous_center": c,  # Track previous position for movement detection
+                    "position_history": [c],  # Keep history of positions to detect movement
                 }
                 self.next_track_id += 1
                 self.person_tracking.append(track)
                 tracks.append(track)
             else:
+                # Update track with new position
+                old_center = best_track.get("center", c)
+                best_track["previous_center"] = old_center
                 best_track["center"] = c
                 best_track["last_seen"] = now_ts
                 best_track["matched"] = True
+                
+                # Update position history (keep last 5 positions for movement analysis)
+                if "position_history" not in best_track:
+                    best_track["position_history"] = [old_center]
+                best_track["position_history"].append(c)
+                if len(best_track["position_history"]) > 5:
+                    best_track["position_history"].pop(0)
+                
                 # Only update entered_roi_time if track was previously out of ROI
                 if not best_track.get("in_roi", False):
-                    # Track was out of ROI, now back in - reset entered_roi_time
+                    # Track was out of ROI, now back in - reset entered_roi_time and position history
                     best_track["entered_roi_time"] = now_ts
                     best_track["in_roi"] = True
+                    best_track["position_history"] = [c]  # Reset history when re-entering
                 else:
                     # Track was already in ROI - preserve entered_roi_time (don't reset it!)
                     best_track["in_roi"] = True
@@ -554,17 +631,35 @@ class QueueMonitor:
         # Re-filter tracks after cleanup (tracks list might be stale)
         tracks = [t for t in self.person_tracking if t["area_type"] == area_type]
 
-        # Count people whose time in ROI exceeds dwell threshold
+        # Count people whose time in ROI exceeds dwell threshold AND are relatively stationary
         count = 0
         for t in tracks:
             if t["in_roi"] and t["entered_roi_time"] is not None:
                 time_in = now_ts - t["entered_roi_time"]
-                if time_in >= dwell_thresh:
+                
+                # For queue area: also check if person is moving too fast (passing through)
+                is_stationary = True
+                if area_type == "queue" and len(t.get("position_history", [])) >= 3:
+                    # Calculate total distance moved over last few positions
+                    positions = t["position_history"]
+                    total_distance = 0
+                    for i in range(1, len(positions)):
+                        dist = self._euclidean(positions[i-1], positions[i])
+                        total_distance += dist
+                    
+                    # If person moved more than 100 pixels in last few frames, they're likely passing through
+                    # (adjust threshold based on frame rate - assuming ~10-15 fps, 100 pixels over 3-5 frames is fast)
+                    if total_distance > 100:
+                        is_stationary = False
+                        # Reset entered_roi_time if person is moving too fast (they're passing through)
+                        t["entered_roi_time"] = now_ts
+                
+                if time_in >= dwell_thresh and is_stationary:
                     t["counted"] = True
                 else:
-                    # Person hasn't been in ROI long enough - don't count yet
+                    # Person hasn't been in ROI long enough or is moving too fast - don't count yet
                     t["counted"] = False
-            # Only count if person has been in ROI long enough
+            # Only count if person has been in ROI long enough and is relatively stationary
             if t.get("counted"):
                 count += 1
         
@@ -586,14 +681,16 @@ class QueueMonitor:
     # Violation saving
     # ------------------------------------------------------------------ #
 
-    def _save_violation_snapshot(self, frame, violation_type, violation_message):
+    def _save_violation_snapshot(self, frame, violation_type, violation_message, queue_count=None, counter_count=None):
         """
         Save a snapshot of a queue violation
         
         Args:
-            frame: Annotated frame to save
+            frame: Frame to save (will be cleaned and annotated with specific violation)
             violation_type: Type of violation ('queue_overflow', 'wait_time_exceeded', 'no_counter_staff')
             violation_message: Human-readable violation message
+            queue_count: Queue count at time of violation (optional, uses current if not provided)
+            counter_count: Counter count at time of violation (optional, uses current if not provided)
             
         Returns:
             str: Path to saved snapshot (relative to static/)
@@ -609,23 +706,168 @@ class QueueMonitor:
             filename = f"queue_{self.channel_id}_{violation_type}_{timestamp_str}.jpg"
             snapshot_path = snapshot_dir / filename
             
-            # Add violation text overlay
+            # Use provided counts or current counts
+            q_count = queue_count if queue_count is not None else self.queue_count
+            c_count = counter_count if counter_count is not None else self.counter_count
+            
+            # Create a clean copy of the frame and add ONLY this violation's text
             annotated = frame.copy()
+            
+            # Get frame dimensions
+            h, w = annotated.shape[:2]
+            
+            # Don't black out the image - just draw text with background rectangles for readability
+            # We'll draw background rectangles behind each text line instead of overlaying the whole area
+            
+            # Add violation text overlay at the TOP - this is the ONLY alert text on this snapshot
+            # Use the SPECIFIC violation message passed to this function
             y_offset = 30
-            cv2.putText(annotated, "QUEUE VIOLATION", (10, y_offset),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.8, (0, 0, 255), 2)
-            y_offset += 30
-            cv2.putText(annotated, violation_message, (10, y_offset),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
-            y_offset += 25
-            cv2.putText(annotated, f"Queue: {self.queue_count} | Counter: {self.counter_count}", 
-                       (10, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1)
             
-            cv2.imwrite(str(snapshot_path), annotated)
-            logger.info(f"Queue violation snapshot saved: {snapshot_path}")
+            # Draw "QUEUE VIOLATION" with light semi-transparent background
+            text = "QUEUE VIOLATION"
+            font = cv2.FONT_HERSHEY_SIMPLEX
+            font_scale = 0.8
+            thickness = 2
+            text_size, baseline = cv2.getTextSize(text, font, font_scale, thickness)
+            text_w, text_h = text_size
+            # Draw very light semi-transparent background (85% original, 15% dark gray)
+            overlay = annotated.copy()
+            cv2.rectangle(overlay, (5, y_offset - text_h - 5), (10 + text_w, y_offset + baseline + 5), (40, 40, 40), -1)
+            cv2.addWeighted(annotated, 0.85, overlay, 0.15, 0, annotated)
+            # Draw text
+            cv2.putText(annotated, text, (10, y_offset),
+                       font, font_scale, (0, 0, 255), thickness)
+            y_offset += 35
             
-            # Return full path for database storage
-            return str(snapshot_path)
+            # CRITICAL: Use the violation_message parameter, not any text that might be on the frame
+            # Wrap long messages to prevent text from going off-screen
+            alert_text = f"Alert: {violation_message}"
+            # Check if text is too long and wrap it if needed
+            text_size, _ = cv2.getTextSize(alert_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+            max_text_width = w - 20  # Leave 10px margin on each side
+            if text_size[0] > max_text_width:
+                # Split text into multiple lines
+                words = violation_message.split()
+                lines = []
+                current_line = "Alert:"
+                for word in words:
+                    test_line = f"{current_line} {word}"
+                    test_size, _ = cv2.getTextSize(test_line, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
+                    if test_size[0] > max_text_width:
+                        lines.append(current_line)
+                        current_line = word
+                    else:
+                        current_line = test_line
+                lines.append(current_line)
+                # Draw each line with light background
+                for line in lines:
+                    font = cv2.FONT_HERSHEY_SIMPLEX
+                    font_scale = 0.6
+                    thickness = 2
+                    text_size, baseline = cv2.getTextSize(line, font, font_scale, thickness)
+                    text_w, text_h = text_size
+                    # Draw very light semi-transparent background (85% original, 15% dark gray)
+                    overlay = annotated.copy()
+                    cv2.rectangle(overlay, (5, y_offset - text_h - 3), (10 + text_w, y_offset + baseline + 3), (40, 40, 40), -1)
+                    cv2.addWeighted(annotated, 0.85, overlay, 0.15, 0, annotated)
+                    # Draw text
+                    cv2.putText(annotated, line, (10, y_offset),
+                               font, font_scale, (255, 255, 255), thickness)
+                    y_offset += 28
+            else:
+                # Draw single line with light background
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.6
+                thickness = 2
+                text_size, baseline = cv2.getTextSize(alert_text, font, font_scale, thickness)
+                text_w, text_h = text_size
+                # Draw very light semi-transparent background (85% original, 15% dark gray)
+                overlay = annotated.copy()
+                cv2.rectangle(overlay, (5, y_offset - text_h - 3), (10 + text_w, y_offset + baseline + 3), (40, 40, 40), -1)
+                cv2.addWeighted(annotated, 0.85, overlay, 0.15, 0, annotated)
+                # Draw text
+                cv2.putText(annotated, alert_text, (10, y_offset),
+                           font, font_scale, (255, 255, 255), thickness)
+                y_offset += 28
+            
+            # Add counts (ensure it's within frame bounds)
+            counts_text = f"Queue: {q_count} | Counter: {c_count}"
+            if y_offset + 25 < h - 120:  # Make sure it's not in the bottom area
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.5
+                thickness = 1
+                text_size, baseline = cv2.getTextSize(counts_text, font, font_scale, thickness)
+                text_w, text_h = text_size
+                # Draw very light semi-transparent background (85% original, 15% dark gray)
+                overlay = annotated.copy()
+                cv2.rectangle(overlay, (5, y_offset - text_h - 2), (10 + text_w, y_offset + baseline + 2), (40, 40, 40), -1)
+                cv2.addWeighted(annotated, 0.85, overlay, 0.15, 0, annotated)
+                # Draw text
+                cv2.putText(annotated, counts_text, (10, y_offset), 
+                           font, font_scale, (0, 255, 255), thickness)
+            
+            # Add channel, time, and alert info at the BOTTOM (within frame bounds)
+            timestamp = datetime.now()
+            time_str = timestamp.strftime("%d/%m/%Y, %I:%M:%S %p")
+            
+            bottom_y = h - 80  # Start 80 pixels from bottom
+            max_text_width = w - 20  # Leave 10px margin on each side
+            
+            # Draw each bottom text line with background
+            bottom_texts = [
+                f"Channel: {self.channel_id}",
+                f"Time: {time_str}",
+            ]
+            
+            # Truncate alert message if too long for bottom display
+            bottom_alert_text = f"Alert: {violation_message}"
+            bottom_text_size, _ = cv2.getTextSize(bottom_alert_text, cv2.FONT_HERSHEY_SIMPLEX, 0.5, 1)
+            if bottom_text_size[0] > max_text_width:
+                # Truncate with ellipsis
+                truncated = violation_message[:50] + "..." if len(violation_message) > 50 else violation_message
+                bottom_alert_text = f"Alert: {truncated}"
+            bottom_texts.append(bottom_alert_text)
+            
+            # Draw each text with light background
+            for text in bottom_texts:
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.5
+                thickness = 1
+                text_size, baseline = cv2.getTextSize(text, font, font_scale, thickness)
+                text_w, text_h = text_size
+                # Draw very light semi-transparent background (85% original, 15% dark gray)
+                overlay = annotated.copy()
+                cv2.rectangle(overlay, (5, bottom_y - text_h - 2), (10 + text_w, bottom_y + baseline + 2), (40, 40, 40), -1)
+                cv2.addWeighted(annotated, 0.85, overlay, 0.15, 0, annotated)
+                # Draw text
+                cv2.putText(annotated, text, (10, bottom_y),
+                           font, font_scale, (255, 255, 255), thickness)
+                bottom_y += 20
+            
+            # Log what we're saving to verify
+            logger.info(f"[{self.channel_id}] Saving snapshot with violation_type={violation_type}, message='{violation_message}', queue={q_count}, counter={c_count}")
+            
+            # Save the image
+            success = cv2.imwrite(str(snapshot_path), annotated)
+            if not success:
+                logger.error(f"Failed to write snapshot image to {snapshot_path}")
+                return None
+            
+            # Verify file was created and has content
+            import os
+            if not os.path.exists(snapshot_path):
+                logger.error(f"Snapshot file was not created: {snapshot_path}")
+                return None
+            
+            file_size = os.path.getsize(snapshot_path)
+            if file_size == 0:
+                logger.error(f"Snapshot file is empty: {snapshot_path}")
+                return None
+            
+            logger.info(f"Queue violation snapshot saved: {snapshot_path} ({file_size} bytes) with message: {violation_message}")
+            
+            # Return full path for database storage (use forward slashes for web compatibility)
+            return str(snapshot_path).replace('\\', '/')
         except Exception as e:
             logger.error(f"Failed to save violation snapshot: {e}")
             return None
@@ -642,6 +884,10 @@ class QueueMonitor:
             logger.warning(f"[{self.channel_id}] Cannot save violations: db_manager not available")
             return
         
+        if not alert_info:
+            logger.warning(f"[{self.channel_id}] Cannot save violations: alert_info is None or empty")
+            return
+        
         current_time = datetime.now()
         message = alert_info.get("message", "")
         logger.info(f"[{self.channel_id}] Saving violations for message: {message}")
@@ -651,12 +897,18 @@ class QueueMonitor:
         message_parts = [part.strip() for part in message.split(";")]
         
         for part in message_parts:
-            if "Queue too long" in part or (">" in part and "queue" in part.lower()):
+            if "Counter capacity exceeded" in part or ("capacity" in part.lower() and "exceeded" in part.lower()):
+                violations.append(("counter_capacity_exceeded", part))
+            elif "Queue too long" in part or ("Queue capacity exceeded" in part) or (">" in part and "queue" in part.lower() and "capacity" not in part.lower()):
                 violations.append(("queue_overflow", part))
             elif "wait time" in part.lower() or "≥" in part or ">=" in part:
                 violations.append(("wait_time_exceeded", part))
-            elif "No staff at counter" in part or ("counter" in part.lower() and "staff" in part.lower()):
+            elif "No staff at counter" in part or ("counter" in part.lower() and "staff" in part.lower() and "capacity" not in part.lower()):
                 violations.append(("no_counter_staff", part))
+            else:
+                # Unknown violation type - log it but still save it
+                logger.warning(f"[{self.channel_id}] Unknown violation type in message part: {part}")
+                violations.append(("queue_alert", part))
         
         if not violations:
             # Fallback: save as general violation if parsing fails
@@ -666,10 +918,36 @@ class QueueMonitor:
         logger.info(f"[{self.channel_id}] Parsed {len(violations)} violation(s) from alert message: {message}")
         
         # Save each violation type separately
+        # IMPORTANT: Use the counts from alert_info (at time of alert) not current counts
+        alert_queue_count = alert_info.get("queue_count", self.queue_count)
+        alert_counter_count = alert_info.get("counter_count", self.counter_count)
+        
         for violation_type, violation_message in violations:
             try:
-                # Save snapshot
-                snapshot_path = self._save_violation_snapshot(frame, violation_type, violation_message)
+                # Save snapshot with specific violation message and counts from alert time
+                snapshot_path = self._save_violation_snapshot(
+                    frame, 
+                    violation_type, 
+                    violation_message,
+                    queue_count=alert_queue_count,
+                    counter_count=alert_counter_count
+                )
+                
+                # Verify snapshot was saved successfully
+                if not snapshot_path:
+                    logger.error(f"[{self.channel_id}] ❌ Failed to save snapshot for violation: {violation_message}")
+                    logger.error(f"[{self.channel_id}] Snapshot path is None - snapshot saving failed!")
+                else:
+                    import os
+                    # Normalize path for checking (handle both forward and backslashes)
+                    check_path = snapshot_path.replace('\\', '/')
+                    if not os.path.exists(snapshot_path):
+                        logger.error(f"[{self.channel_id}] ❌ Snapshot path does not exist: {snapshot_path}")
+                        logger.error(f"[{self.channel_id}] Attempted to check: {os.path.abspath(snapshot_path)}")
+                        snapshot_path = None  # Set to None so database doesn't store invalid path
+                    else:
+                        file_size = os.path.getsize(snapshot_path)
+                        logger.info(f"[{self.channel_id}] ✅ Snapshot verified: {snapshot_path} ({file_size} bytes)")
                 
                 # Save to database (with proper app context handling)
                 violation_id = None
@@ -759,7 +1037,7 @@ class QueueMonitor:
         # V1: Queue too long
         if self.queue_count > max_queue_without_violation:
             violations.append(
-                f"Queue too long: {self.queue_count} > {max_queue_without_violation}"
+                f"Queue capacity exceeded: {self.queue_count} > {max_queue_without_violation} (max allowed)"
             )
             logger.debug(f"[{self.channel_id}] V1 violation detected: queue_count={self.queue_count} > threshold={max_queue_without_violation}")
 
@@ -771,11 +1049,29 @@ class QueueMonitor:
             logger.debug(f"[{self.channel_id}] V2 violation detected: max_wait={max_wait:.1f}s >= threshold={wait_threshold}s")
 
         # V3: No staff at counter
+        # Only trigger if queue has people AND counter is actually empty (not just below threshold)
+        # This prevents false positives when staff are present but detection is slightly off
         if self.queue_count > 0 and self.counter_count < counter_required:
-            violations.append(
-                f"No staff at counter (queue={self.queue_count}, counter={self.counter_count})"
-            )
-            logger.debug(f"[{self.channel_id}] V3 violation detected: queue={self.queue_count} > 0, counter={self.counter_count} < required={counter_required}")
+            # Additional checks to prevent false positives:
+            # 1. Check if we have any detections classified as "counter" (even if not counted yet)
+            counter_detections = len([t for t in self.person_tracking if t.get("area_type") == "counter" and t.get("in_roi")])
+            # 2. Check if we have any detections in counter ROI from current frame
+            # (This catches cases where detection happens but tracking hasn't updated yet)
+            current_counter_dets = getattr(self, '_last_counter_dets', [])
+            current_counter_count = len(current_counter_dets)
+            
+            # If we have counter detections but count is 0, it's likely a tracking/dwell time issue
+            if counter_detections > 0 or current_counter_count > 0:
+                # People detected but not counted - likely tracking/dwell time issue, not absence
+                logger.info(f"[{self.channel_id}] V3 check: {counter_detections} tracked + {current_counter_count} current detections in counter but count=0 (likely tracking issue, skipping alert)")
+            else:
+                # No detections at all in counter area - this is a real absence
+                # Don't include counts in the message - they may be stale when displayed
+                # The current counts are shown separately in the display
+                violations.append(
+                    "No staff at counter"
+                )
+                logger.info(f"[{self.channel_id}] V3 violation detected: queue={self.queue_count} > 0, counter={self.counter_count} < required={counter_required}, no counter detections found")
 
         # V4: Counter capacity exceeded
         if counter_capacity_max is not None and self.counter_count > counter_capacity_max:
@@ -886,6 +1182,10 @@ class QueueMonitor:
         self.queue_count = self._update_person_tracking(queue_dets, "queue")
         self.counter_count = self._update_person_tracking(counter_dets, "counter")
         
+        # Store current detections for alert checking
+        self._last_counter_dets = counter_dets
+        self._last_queue_dets = queue_dets
+        
         # Debug logging for counter tracking
         if self.frame_count <= 10 or self.frame_count % 30 == 0:
             logger.info(f"[{self.channel_id}] Frame {self.frame_count} tracking results:")
@@ -932,6 +1232,8 @@ class QueueMonitor:
             logger.info(f"[{self.channel_id}] Alert details: queue={self.queue_count}, counter={self.counter_count}, wait={alert_info.get('max_wait_seconds', 0):.1f}s")
             
             # Save violation snapshots and database records
+            # Use original_frame which has ROIs and counts, but _save_violation_snapshot will
+            # clear any existing alert text and add the specific violation message
             self._save_violations(original_frame, alert_info)
             
             # Socket.IO alert

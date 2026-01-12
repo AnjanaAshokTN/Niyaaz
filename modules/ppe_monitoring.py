@@ -54,7 +54,7 @@ class PPEMonitoring:
         
         # Hairnet configuration
         self.hairnet_positive_class = "Hairnet"
-        self.hairnet_violation_class = "No_hairnet"  # Not used in model but for clarity
+        self.hairnet_violation_class = "No_hairnet"  
         
         # Required PPE items (can be overridden per camera via config)
         self.required_items = {

@@ -31,6 +31,7 @@ from pathlib import Path
 from ultralytics import YOLO
 from .model_manager import get_shared_model, release_shared_model
 from .gif_recorder import AlertGifRecorder
+from .yolo_detector import YOLODetector
 
 logger = logging.getLogger(__name__)
 
@@ -75,8 +76,20 @@ class TableServiceMonitor:
         # Person class ID (best.pt person is class 0)
         self.person_class_id = 0
 
-        # Load shared YOLO model
+        # Load shared YOLO model for tables
         self.model = get_shared_model(self.model_weight)
+        
+        # Person detector (using yolo11n.pt like simple script)
+        self.person_detector = YOLODetector(
+            model_path="models/yolo11n.pt",
+            confidence_threshold=0.25,  # Lower threshold to detect more persons
+            img_size=640,
+            person_class_id=0  # Person class in yolo11n.pt (class 0 = person)
+        )
+        
+        # Person proximity settings (matching simple script)
+        self.PERSON_NEAR_DISTANCE = 180  # pixels - matching simple script
+        self.TABLE_MATCH_DISTANCE = 100  # pixels - for table matching (if not using ROIs)
 
         # Table ROI configuration
         # Format: {table_id: {"polygon": [(x1,y1), (x2,y2), ...], "bbox": (min_x, min_y, max_x, max_y)}}
@@ -100,6 +113,7 @@ class TableServiceMonitor:
         self.process_every_n_frames = 5  # Process every 5th frame (adjust based on performance needs)
         self.last_detections = []  # Cache last detections for skipped frames
         self.last_table_detections = {}  # Cache last table detections
+        self.last_persons = []  # Cache last person positions for skipped frames
 
         # Tracking data per table
         # Format: {table_id: {
@@ -345,9 +359,30 @@ class TableServiceMonitor:
 
         return table_detections
 
-    def _update_table_tracking(self, table_id, cleanliness, bbox, confidence, current_time, frame=None):
+    def _distance(self, p1, p2):
+        """Calculate Euclidean distance between two points"""
+        return math.hypot(p1[0] - p2[0], p1[1] - p2[1])
+    
+    def _check_person_near_table(self, table_center, persons):
+        """
+        Check if any person is near the table center (matching simple script logic)
+        
+        Args:
+            table_center: (x, y) tuple of table center
+            persons: List of (x, y) tuples of person centers
+            
+        Returns:
+            bool: True if any person is within PERSON_NEAR_DISTANCE of table center
+        """
+        for person_center in persons:
+            if self._distance(table_center, person_center) < self.PERSON_NEAR_DISTANCE:
+                return True
+        return False
+
+    def _update_table_tracking(self, table_id, cleanliness, bbox, confidence, current_time, frame=None, persons=None):
         """
         Update tracking for a table and check for violations (cleanliness only)
+        Matches simple script logic: only alert if table is unclean AND no person is near
 
         Args:
             table_id: Table identifier
@@ -356,6 +391,7 @@ class TableServiceMonitor:
             confidence: Detection confidence (0.0-1.0)
             current_time: Current timestamp
             frame: Optional frame for snapshot saving
+            persons: List of (x, y) tuples of person centers (for proximity check)
         """
         if table_id not in self.table_tracking:
             self.table_tracking[table_id] = {
@@ -363,7 +399,8 @@ class TableServiceMonitor:
                 "unclean_start_time": None,
                 "last_unclean_alert_time": None,
                 "last_detection_bbox": None,
-                "last_detection_time": None
+                "last_detection_time": None,
+                "center": None  # Table center for proximity checking
             }
 
         tracking = self.table_tracking[table_id]
@@ -373,6 +410,20 @@ class TableServiceMonitor:
         if bbox is not None:
             tracking["last_detection_bbox"] = bbox
             tracking["last_detection_time"] = now_ts
+            # Calculate table center
+            x1, y1, x2, y2 = bbox
+            tracking["center"] = ((x1 + x2) / 2, (y1 + y2) / 2)
+
+        # Get table center for proximity check
+        table_center = tracking.get("center")
+        if table_center is None and bbox is not None:
+            x1, y1, x2, y2 = bbox
+            table_center = ((x1 + x2) / 2, (y1 + y2) / 2)
+
+        # Check person proximity (matching simple script logic)
+        person_near = False
+        if persons is not None and table_center is not None:
+            person_near = self._check_person_near_table(table_center, persons)
 
         # Update cleanliness state
         if cleanliness is not None:
@@ -383,13 +434,18 @@ class TableServiceMonitor:
                     tracking["unclean_start_time"] = now_ts
                     logger.debug(f"[{self.channel_id}] Table {table_id}: State changed to unclean")
                 
-                # Check if unclean for long enough to trigger alert
-                # Updated to match provided code: immediate alert (threshold = 0.0)
-                if tracking["unclean_start_time"] is not None:
-                    unclean_duration = now_ts - tracking["unclean_start_time"]
-                    threshold = self.settings.get("unclean_duration_threshold", 0.0)
-                    if unclean_duration >= threshold:
-                        self._check_unclean_violation(table_id, tracking, unclean_duration, current_time, frame)
+                # Matching simple script logic: if person is near, reset unclean_start (don't alert)
+                if person_near:
+                    # ✅ PERSON PRESENT → NO ALERT (matching simple script)
+                    tracking["unclean_start_time"] = None
+                    logger.debug(f"[{self.channel_id}] Table {table_id}: Person near, resetting unclean timer")
+                else:
+                    # No person near - check if unclean for long enough to trigger alert
+                    if tracking["unclean_start_time"] is not None:
+                        unclean_duration = now_ts - tracking["unclean_start_time"]
+                        threshold = self.settings.get("unclean_duration_threshold", 0.0)
+                        if unclean_duration >= threshold:
+                            self._check_unclean_violation(table_id, tracking, unclean_duration, current_time, frame)
                         
             elif cleanliness == "clean":
                 # State changed to clean - reset tracking
@@ -828,26 +884,51 @@ class TableServiceMonitor:
                 
                 # Cache table detections
                 self.last_table_detections = table_detections
+                
+                # Run person detection for proximity checks
+                try:
+                    person_detections = self.person_detector.detect_persons(frame)
+                    persons_centers = [d['center'] for d in person_detections]
+                    self.last_persons = persons_centers
+                except Exception as e:
+                    logger.error(f"Error in person detection: {e}")
+                    persons_centers = self.last_persons if hasattr(self, 'last_persons') else []
 
                 # Update tracking for each detected table
                 for table_id in table_detections.keys():
                     cleanliness = table_detections[table_id]["cleanliness"]
                     bbox = table_detections[table_id]["bbox"]
                     confidence = table_detections[table_id]["confidence"]
-                    self._update_table_tracking(table_id, cleanliness, bbox, confidence, current_time, frame)
+                    self._update_table_tracking(table_id, cleanliness, bbox, confidence, current_time, frame, persons=persons_centers)
                 
             except Exception as e:
                 logger.error(f"Error processing frame: {e}")
                 # On error, use cached detections
                 detections = self.last_detections
                 table_detections = self.last_table_detections
+                persons = self.last_persons if hasattr(self, 'last_persons') else []
+                
+                # Still update tracking with cached data (but won't alert on cached data)
+                for table_id in table_detections.keys():
+                    cleanliness = table_detections[table_id]["cleanliness"]
+                    bbox = table_detections[table_id]["bbox"]
+                    confidence = table_detections[table_id]["confidence"]
+                    self._update_table_tracking(table_id, cleanliness, bbox, confidence, current_time, frame, persons=persons)
         else:
             # Use cached detections from last processed frame
             detections = self.last_detections
             table_detections = self.last_table_detections
+            persons = self.last_persons if hasattr(self, 'last_persons') else []
             
             # Still update violations display (lightweight operation)
             self._update_current_violations(detections)
+            
+            # Update tracking with cached data (lightweight - won't trigger new alerts)
+            for table_id in table_detections.keys():
+                cleanliness = table_detections[table_id]["cleanliness"]
+                bbox = table_detections[table_id]["bbox"]
+                confidence = table_detections[table_id]["confidence"]
+                self._update_table_tracking(table_id, cleanliness, bbox, confidence, current_time, frame, persons=persons)
         
         # Update unclean tables list for display (always update for visualization)
         self._current_unclean_tables = [

@@ -18,14 +18,24 @@ logger = logging.getLogger(__name__)
 # Import Telegram notification function
 try:
     from modules.queue_monitor import send_telegram_message
-    TELEGRAM_AVAILABLE = True
-    logger.info("✅ Telegram notification function imported successfully")
+    import os
+    # Check if credentials are actually set
+    bot_token = os.getenv("bot_token") or os.getenv("TELEGRAM_BOT_TOKEN")
+    chat_id = os.getenv("chat_id") or os.getenv("TELEGRAM_CHAT_ID")
+    if bot_token and chat_id:
+        TELEGRAM_AVAILABLE = True
+        logger.info("✅ Telegram notification function imported successfully and credentials are configured")
+    else:
+        TELEGRAM_AVAILABLE = False
+        logger.warning("⚠️ Telegram notification function imported but credentials NOT SET (bot_token/chat_id or TELEGRAM_BOT_TOKEN/TELEGRAM_CHAT_ID)")
+        logger.warning("   RTSP connection alerts will NOT be sent to Telegram")
 except ImportError as e:
     # Fallback if queue_monitor is not available
     TELEGRAM_AVAILABLE = False
     logger.warning(f"Failed to import send_telegram_message: {e}")
-    def send_telegram_message(text: str) -> None:
+    def send_telegram_message(text: str) -> bool:
         logger.warning("Telegram notification not available (fallback function)")
+        return False
 
 # Try to import GStreamer NVDEC decoder
 try:
@@ -358,6 +368,60 @@ class RTSPConnectionPool:
         self._lock = threading.RLock()
         self._subscribers = {}  # {rtsp_url: {channel_id: callback}}
         
+        # Alert aggregation for Telegram messages
+        self._pending_alerts = set()  # Set of alert types that are pending
+        self._alert_lock = threading.Lock()
+        self._alert_timer = None  # Timer for debouncing alerts
+    
+    def _send_aggregated_alert(self, alert_type: str):
+        """
+        Send aggregated Telegram alert for connection issues
+        Args:
+            alert_type: Type of alert ('lost', 'restored', 'issues')
+        """
+        with self._alert_lock:
+            # Add alert to pending set
+            self._pending_alerts.add(alert_type)
+            
+            # Cancel existing timer if any
+            if self._alert_timer is not None:
+                self._alert_timer.cancel()
+            
+            # Create new timer to send aggregated message after 2 seconds
+            def send_message():
+                with self._alert_lock:
+                    if not self._pending_alerts:
+                        return
+                    
+                    # Determine message based on alert types
+                    if 'lost' in self._pending_alerts:
+                        message = "🔴 RTSP Connection Lost"
+                    elif 'restored' in self._pending_alerts:
+                        message = "✅ RTSP Connection Restored"
+                    elif 'issues' in self._pending_alerts:
+                        message = "⚠️ RTSP Connection Issues"
+                    else:
+                        message = "⚠️ RTSP Connection Alert"
+                    
+                    # Send single aggregated message
+                    if TELEGRAM_AVAILABLE and self._pending_alerts:
+                        try:
+                            success = send_telegram_message(message)
+                            if success:
+                                logger.info(f"✅ Sent aggregated Telegram alert: {message}")
+                            else:
+                                logger.warning(f"⚠️ Failed to send aggregated Telegram alert: {message}")
+                        except Exception as e:
+                            logger.error(f"Failed to send aggregated Telegram alert: {e}")
+                    
+                    # Clear pending alerts
+                    self._pending_alerts.clear()
+                    self._alert_timer = None
+            
+            self._alert_timer = threading.Timer(2.0, send_message)
+            self._alert_timer.daemon = True
+            self._alert_timer.start()
+        
     def get_connection(self, rtsp_url: str, channel_id: str, frame_callback: Callable):
         """
         Get or create RTSP connection and subscribe to frames
@@ -385,31 +449,8 @@ class RTSPConnectionPool:
                 if connection.start():
                     self._connections[rtsp_url] = connection
                 else:
-                    # Connection failed to start - send Telegram alert
-                    try:
-                        affected_channels = self.get_affected_channels(rtsp_url)
-                        timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                        msg_lines = [
-                            "🔴 RTSP Connection Failed to Start",
-                            f"Time: {timestamp}",
-                            f"RTSP URL: {rtsp_url}",
-                        ]
-                        if affected_channels:
-                            msg_lines.append(f"Affected Channels: {', '.join(affected_channels)}")
-                        else:
-                            msg_lines.append(f"Affected Channel: {channel_id}")
-                        msg_lines.extend([
-                            "Failed during initial connection attempt",
-                            "All decoders (GPU/CPU/FFmpeg) failed to connect",
-                        ])
-                        
-                        if TELEGRAM_AVAILABLE:
-                            send_telegram_message("\n".join(msg_lines))
-                            logger.info(f"✅ Sent Telegram alert for initial connection failure: {rtsp_url}")
-                        else:
-                            logger.warning(f"⚠️ Telegram not available - would have sent alert for: {rtsp_url}")
-                    except Exception as e:
-                        logger.error(f"Failed to send Telegram alert for initial connection failure: {e}")
+                    # Connection failed to start - don't send Telegram alert during startup (too many alerts)
+                    logger.warning(f"RTSP connection failed to start for: {rtsp_url} (Telegram alert disabled during startup)")
                     
                     # Remove the subscriber since connection failed
                     self._subscribers[rtsp_url].pop(channel_id, None)
@@ -586,34 +627,8 @@ class RTSPConnection:
             if self.cap is None:
                 logger.error(f"Cannot create video reader for: {self.rtsp_url}")
                 
-                # Send Telegram alert for connection failure during initialization
-                try:
-                    affected_channels = []
-                    if self.pool:
-                        affected_channels = self.pool.get_affected_channels(self.rtsp_url)
-                    
-                    timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                    msg_lines = [
-                        "🔴 RTSP Connection Initialization Failed",
-                        f"Time: {timestamp}",
-                        f"RTSP URL: {self.rtsp_url}",
-                    ]
-                    if affected_channels:
-                        msg_lines.append(f"Affected Channels: {', '.join(affected_channels)}")
-                    else:
-                        msg_lines.append("Affected Channels: Unknown")
-                    msg_lines.extend([
-                        "All decoder attempts (GPU/CPU/FFmpeg) failed",
-                        "Connection could not be established",
-                    ])
-                    
-                    if TELEGRAM_AVAILABLE:
-                        send_telegram_message("\n".join(msg_lines))
-                        logger.info(f"✅ Sent Telegram alert for initialization failure: {self.rtsp_url}")
-                    else:
-                        logger.warning(f"⚠️ Telegram not available - would have sent alert for: {self.rtsp_url}")
-                except Exception as e:
-                    logger.error(f"Failed to send Telegram alert for initialization failure: {e}")
+                # Don't send Telegram alert during startup (too many alerts)
+                logger.warning(f"RTSP connection initialization failed for: {self.rtsp_url} (Telegram alert disabled during startup)")
                 
                 return False
             
@@ -793,34 +808,8 @@ class RTSPConnection:
                     # Send early warning alert when failures start accumulating (once per failure sequence)
                     if consecutive_failures >= 10 and not early_warning_sent:
                         early_warning_sent = True  # Mark as sent to avoid duplicates
-                        try:
-                            affected_channels = []
-                            if self.pool:
-                                affected_channels = self.pool.get_affected_channels(self.rtsp_url)
-                            
-                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            msg_lines = [
-                                "⚠️ RTSP Connection Issues Detected",
-                                f"Time: {timestamp}",
-                                f"RTSP URL: {self.rtsp_url}",
-                            ]
-                            if affected_channels:
-                                msg_lines.append(f"Affected Channels: {', '.join(affected_channels)}")
-                            else:
-                                msg_lines.append("Affected Channels: None")
-                            msg_lines.extend([
-                                f"Decoder: {self.decoder_type}",
-                                f"Consecutive failures: {consecutive_failures}/{max_failures}",
-                                "Attempting to recover...",
-                            ])
-                            
-                            if TELEGRAM_AVAILABLE:
-                                send_telegram_message("\n".join(msg_lines))
-                                logger.info(f"✅ Sent Telegram early warning alert: {self.rtsp_url}")
-                            else:
-                                logger.warning(f"⚠️ Telegram not available - would have sent early warning for: {self.rtsp_url}")
-                        except Exception as e:
-                            logger.error(f"Failed to send Telegram early warning alert: {e}")
+                        if self.pool:
+                            self.pool._send_aggregated_alert('issues')
                     
                     # Only log warnings periodically to reduce spam
                     if current_time - last_warning_time >= warning_interval:
@@ -882,30 +871,8 @@ class RTSPConnection:
                                             logger.debug(f"Could not immediately broadcast frame after reconnection: {e}")
                                         
                                         # Send Telegram alert for successful reconnection
-                                        try:
-                                            affected_channels = []
-                                            if self.pool:
-                                                affected_channels = self.pool.get_affected_channels(self.rtsp_url)
-                                            
-                                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                            msg_lines = [
-                                                "✅ RTSP Connection Restored",
-                                                f"Time: {timestamp}",
-                                                f"RTSP URL: {self.rtsp_url}",
-                                            ]
-                                            if affected_channels:
-                                                msg_lines.append(f"Affected Channels: {', '.join(affected_channels)}")
-                                            else:
-                                                msg_lines.append("Affected Channels: None (connection restored)")
-                                            msg_lines.append(f"Reconnection successful after {successful_reconnect_attempt} attempt(s)")
-                                            
-                                            if TELEGRAM_AVAILABLE:
-                                                send_telegram_message("\n".join(msg_lines))
-                                                logger.info(f"✅ Sent Telegram alert for reconnection: {self.rtsp_url}")
-                                            else:
-                                                logger.warning(f"⚠️ Telegram not available - would have sent reconnection alert for: {self.rtsp_url}")
-                                        except Exception as e:
-                                            logger.error(f"Failed to send Telegram alert for reconnection: {e}")
+                                        if self.pool:
+                                            self.pool._send_aggregated_alert('restored')
                                         continue
                                     else:
                                         new_cap.release()
@@ -916,65 +883,15 @@ class RTSPConnection:
                         
                         # Send Telegram alert if all reconnection attempts failed
                         if not reconnect_successful and reconnect_attempts >= max_reconnect_attempts:
-                            try:
-                                affected_channels = []
-                                if self.pool:
-                                    affected_channels = self.pool.get_affected_channels(self.rtsp_url)
-                                
-                                timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                                msg_lines = [
-                                    "⚠️ RTSP Reconnection Failed",
-                                    f"Time: {timestamp}",
-                                    f"RTSP URL: {self.rtsp_url}",
-                                ]
-                                if affected_channels:
-                                    msg_lines.append(f"Affected Channels: {', '.join(affected_channels)}")
-                                else:
-                                    msg_lines.append("Affected Channels: None")
-                                msg_lines.extend([
-                                    f"Failed after {max_reconnect_attempts} reconnection attempts",
-                                    f"Connection will be stopped",
-                                ])
-                                
-                                if TELEGRAM_AVAILABLE:
-                                    send_telegram_message("\n".join(msg_lines))
-                                    logger.info(f"✅ Sent Telegram alert for reconnection failure: {self.rtsp_url}")
-                                else:
-                                    logger.warning(f"⚠️ Telegram not available - would have sent reconnection failure alert for: {self.rtsp_url}")
-                            except Exception as e:
-                                logger.error(f"Failed to send Telegram alert for reconnection failure: {e}")
+                            if self.pool:
+                                self.pool._send_aggregated_alert('lost')
                     
                     if consecutive_failures >= max_failures:
                         logger.error(f"Too many consecutive failures for {self.rtsp_url}, stopping")
                         
                         # Send Telegram alert for connection loss
-                        try:
-                            affected_channels = []
-                            if self.pool:
-                                affected_channels = self.pool.get_affected_channels(self.rtsp_url)
-                            
-                            timestamp = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
-                            msg_lines = [
-                                "🔴 RTSP Connection Lost",
-                                f"Time: {timestamp}",
-                                f"RTSP URL: {self.rtsp_url}",
-                            ]
-                            if affected_channels:
-                                msg_lines.append(f"Affected Channels: {', '.join(affected_channels)}")
-                            else:
-                                msg_lines.append("Affected Channels: None")
-                            msg_lines.extend([
-                                f"Decoder: {self.decoder_type}",
-                                f"Failed after {consecutive_failures} consecutive failures",
-                            ])
-                            
-                            if TELEGRAM_AVAILABLE:
-                                send_telegram_message("\n".join(msg_lines))
-                                logger.info(f"✅ Sent Telegram alert for connection loss: {self.rtsp_url}")
-                            else:
-                                logger.warning(f"⚠️ Telegram not available - would have sent connection loss alert for: {self.rtsp_url}")
-                        except Exception as e:
-                            logger.error(f"Failed to send Telegram alert for connection loss: {e}")
+                        if self.pool:
+                            self.pool._send_aggregated_alert('lost')
                         break
                     
                     time.sleep(0.1)

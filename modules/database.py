@@ -1194,6 +1194,26 @@ class DatabaseManager:
             
         except Exception as e:
             self.db.session.rollback()
+            # Check if it's a unique constraint violation (sequence out of sync)
+            error_str = str(e)
+            if 'UniqueViolation' in error_str and 'alert_gifs_pkey' in error_str:
+                logger.warning(f"Sequence out of sync for alert_gifs, attempting to fix...")
+                try:
+                    # Get max ID and reset sequence
+                    max_id_result = self.db.session.execute(
+                        self.db.text("SELECT COALESCE(MAX(id), 0) FROM alert_gifs")
+                    ).scalar()
+                    new_seq = max_id_result + 1
+                    self.db.session.execute(
+                        self.db.text(f"SELECT setval('alert_gifs_id_seq', {new_seq}, false)")
+                    )
+                    self.db.session.commit()
+                    logger.info(f"Fixed alert_gifs sequence to {new_seq}, retrying save...")
+                    # Retry the save
+                    return self.save_alert_gif(channel_id, alert_type, gif_info, alert_message, alert_data)
+                except Exception as fix_error:
+                    logger.error(f"Failed to fix sequence: {fix_error}")
+            logger.error(f"Error saving alert GIF: {e}")
             raise e
     
     def log_alert(self, channel_id, alert_type, alert_message, alert_data=None):
@@ -1231,6 +1251,25 @@ class DatabaseManager:
             
         except Exception as e:
             self.db.session.rollback()
+            # Check if it's a unique constraint violation (sequence out of sync)
+            error_str = str(e)
+            if 'UniqueViolation' in error_str and 'alert_gifs_pkey' in error_str:
+                logger.warning(f"Sequence out of sync for alert_gifs, attempting to fix...")
+                try:
+                    # Get max ID and reset sequence
+                    max_id_result = self.db.session.execute(
+                        self.db.text("SELECT COALESCE(MAX(id), 0) FROM alert_gifs")
+                    ).scalar()
+                    new_seq = max_id_result + 1
+                    self.db.session.execute(
+                        self.db.text(f"SELECT setval('alert_gifs_id_seq', {new_seq}, false)")
+                    )
+                    self.db.session.commit()
+                    logger.info(f"Fixed alert_gifs sequence to {new_seq}, retrying save...")
+                    # Retry the save
+                    return self.log_alert(channel_id, alert_type, alert_message, alert_data)
+                except Exception as fix_error:
+                    logger.error(f"Failed to fix sequence: {fix_error}")
             logger.error(f"Error logging alert: {e}")
             raise e
     
@@ -1662,6 +1701,25 @@ class DatabaseManager:
             
         except Exception as e:
             self.db.session.rollback()
+            # Check if it's a unique constraint violation (sequence out of sync)
+            error_str = str(e)
+            if 'UniqueViolation' in error_str and 'cash_snapshots_pkey' in error_str:
+                logger.warning(f"Sequence out of sync for cash_snapshots, attempting to fix...")
+                try:
+                    # Get max ID and reset sequence
+                    max_id_result = self.db.session.execute(
+                        self.db.text("SELECT COALESCE(MAX(id), 0) FROM cash_snapshots")
+                    ).scalar()
+                    new_seq = max_id_result + 1
+                    self.db.session.execute(
+                        self.db.text(f"SELECT setval('cash_snapshots_id_seq', {new_seq}, false)")
+                    )
+                    self.db.session.commit()
+                    logger.info(f"Fixed cash_snapshots sequence to {new_seq}, retrying save...")
+                    # Retry the save
+                    return self.save_cash_snapshot(channel_id, snapshot_filename, snapshot_path, alert_message, alert_data, file_size, detection_count)
+                except Exception as fix_error:
+                    logger.error(f"Failed to fix sequence: {fix_error}")
             logger.error(f"Error saving cash snapshot: {e}")
             raise e
     
@@ -2523,6 +2581,23 @@ class DatabaseManager:
             self.db.session.commit()
             
             logger.info(f"Queue violation saved: {violation_type} for channel {channel_id}")
+            
+            # Send Telegram notification with snapshot
+            alert_message = f"Queue violation: {violation_message}"
+            if queue_count > 0 or counter_count > 0:
+                alert_message += f" (Queue: {queue_count}, Counter: {counter_count})"
+            if wait_time_seconds > 0:
+                wait_min = wait_time_seconds / 60
+                alert_message += f" (Wait: {wait_min:.1f} min)"
+            
+            _send_telegram_alert(
+                channel_id=channel_id,
+                alert_type='queue_violation',
+                alert_message=alert_message,
+                snapshot_path=snapshot_path,
+                alert_data=alert_data
+            )
+            
             return violation.id
             
         except Exception as e:
@@ -2662,6 +2737,47 @@ class DatabaseManager:
             
         except Exception as e:
             logger.error(f"Error adding table service violation: {e}")
+            self.db.session.rollback()
+            return None
+    
+    def add_table_service_order(self, channel_id, table_id, order_wait_time, service_wait_time, timestamp=None, alert_data=None):
+        """Add a completed table service order to database (all orders, not just violations)"""
+        import json
+        
+        try:
+            # Use order_wait_time as the primary waiting_time
+            waiting_time = order_wait_time if order_wait_time is not None else (service_wait_time if service_wait_time is not None else 0.0)
+            
+            # Convert alert_data to JSON string if provided
+            alert_data_str = None
+            if alert_data:
+                if isinstance(alert_data, dict):
+                    alert_data_str = json.dumps(alert_data)
+                else:
+                    alert_data_str = str(alert_data)
+            
+            order = self.TableServiceViolation(
+                channel_id=channel_id,
+                table_id=table_id,
+                waiting_time=waiting_time,
+                order_wait_time=order_wait_time,
+                service_wait_time=service_wait_time,
+                snapshot_filename=None,  # No snapshot for regular orders
+                snapshot_path=None,
+                alert_data=alert_data_str,
+                file_size=0,
+                created_at=timestamp if timestamp else get_ist_now()
+            )
+            
+            self.db.session.add(order)
+            self.db.session.commit()
+            
+            logger.debug(f"Table service order saved: Table {table_id} in channel {channel_id}, order wait: {order_wait_time:.1f}s, service wait: {service_wait_time:.1f}s")
+            
+            return order.id
+            
+        except Exception as e:
+            logger.error(f"Error adding table service order: {e}")
             self.db.session.rollback()
             return None
     
@@ -3150,7 +3266,62 @@ class DatabaseManager:
                 'daily_counts': {},
                 'period_days': days
             }
-
+    
+    def delete_smoking_snapshot(self, snapshot_id):
+        """Delete smoking detection snapshot from database"""
+        try:
+            snapshot = self.SmokingSnapshot.query.get(snapshot_id)
+            if snapshot:
+                # Delete the actual file
+                import os
+                if os.path.exists(snapshot.snapshot_path):
+                    try:
+                        os.remove(snapshot.snapshot_path)
+                    except:
+                        pass
+                
+                self.db.session.delete(snapshot)
+                self.db.session.commit()
+                return True
+            return False
+            
+        except Exception as e:
+            self.db.session.rollback()
+            logger.error(f"Error deleting smoking snapshot: {e}")
+            raise e
+    
+    def clear_old_smoking_snapshots(self, days=7):
+        """Clear old smoking detection snapshots older than specified days"""
+        try:
+            import os
+            from datetime import timedelta
+            
+            cutoff_date = get_ist_now() - timedelta(days=days)
+            
+            old_snapshots = self.SmokingSnapshot.query.filter(
+                self.SmokingSnapshot.created_at < cutoff_date
+            ).all()
+            
+            deleted_count = 0
+            for snapshot in old_snapshots:
+                # Delete file if exists
+                if os.path.exists(snapshot.snapshot_path):
+                    try:
+                        os.remove(snapshot.snapshot_path)
+                    except:
+                        pass
+                
+                # Delete database record
+                self.db.session.delete(snapshot)
+                deleted_count += 1
+            
+            self.db.session.commit()
+            return deleted_count
+            
+        except Exception as e:
+            self.db.session.rollback()
+            logger.error(f"Error clearing old smoking snapshots: {e}")
+            raise e
 
 
 
