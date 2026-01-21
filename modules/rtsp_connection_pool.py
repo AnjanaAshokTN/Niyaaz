@@ -373,11 +373,12 @@ class RTSPConnectionPool:
         self._alert_lock = threading.Lock()
         self._alert_timer = None  # Timer for debouncing alerts
     
-    def _send_aggregated_alert(self, alert_type: str):
+    def _send_aggregated_alert(self, alert_type: str, immediate: bool = False):
         """
         Send aggregated Telegram alert for connection issues
         Args:
             alert_type: Type of alert ('lost', 'restored', 'issues')
+            immediate: If True, send immediately without waiting for aggregation timer
         """
         with self._alert_lock:
             # Add alert to pending set
@@ -386,8 +387,9 @@ class RTSPConnectionPool:
             # Cancel existing timer if any
             if self._alert_timer is not None:
                 self._alert_timer.cancel()
+                self._alert_timer = None
             
-            # Create new timer to send aggregated message after 2 seconds
+            # Function to send the message
             def send_message():
                 with self._alert_lock:
                     if not self._pending_alerts:
@@ -418,9 +420,13 @@ class RTSPConnectionPool:
                     self._pending_alerts.clear()
                     self._alert_timer = None
             
-            self._alert_timer = threading.Timer(2.0, send_message)
-            self._alert_timer.daemon = True
-            self._alert_timer.start()
+            # Send immediately if requested, otherwise use timer
+            if immediate:
+                send_message()
+            else:
+                self._alert_timer = threading.Timer(2.0, send_message)
+                self._alert_timer.daemon = True
+                self._alert_timer.start()
         
     def get_connection(self, rtsp_url: str, channel_id: str, frame_callback: Callable):
         """
@@ -449,8 +455,9 @@ class RTSPConnectionPool:
                 if connection.start():
                     self._connections[rtsp_url] = connection
                 else:
-                    # Connection failed to start - don't send Telegram alert during startup (too many alerts)
-                    logger.warning(f"RTSP connection failed to start for: {rtsp_url} (Telegram alert disabled during startup)")
+                    # Connection failed to start - send simplified aggregated alert immediately
+                    logger.warning(f"RTSP connection failed to start for: {rtsp_url}")
+                    self._send_aggregated_alert('lost', immediate=True)
                     
                     # Remove the subscriber since connection failed
                     self._subscribers[rtsp_url].pop(channel_id, None)
@@ -627,8 +634,9 @@ class RTSPConnection:
             if self.cap is None:
                 logger.error(f"Cannot create video reader for: {self.rtsp_url}")
                 
-                # Don't send Telegram alert during startup (too many alerts)
-                logger.warning(f"RTSP connection initialization failed for: {self.rtsp_url} (Telegram alert disabled during startup)")
+                # Send simplified aggregated alert immediately
+                if self.pool:
+                    self.pool._send_aggregated_alert('lost', immediate=True)
                 
                 return False
             

@@ -50,7 +50,7 @@ class CashDetection:
         # Note: Model doesn't have separate "cash" class, only "Cashdraw-open"
         
         # Alert configuration
-        self.alert_cooldown = 10.0  # seconds between repeated alerts for same detection
+        self.alert_cooldown = 240  # seconds between repeated alerts for same detection
         self.detection_duration_threshold = 1.0  # seconds - cash must be detected for this long before alert
         self.snapshot_dir = Path("static/cash_snapshots")
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)

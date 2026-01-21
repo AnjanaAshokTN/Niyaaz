@@ -2578,9 +2578,62 @@ def get_module_analytics(module_name):
                     
                     # Get all violations from last 7 days
                     # Use db_manager.TableServiceViolation instead of importing
-                    all_violations = db.session.query(db_manager.TableServiceViolation).filter(
-                        db_manager.TableServiceViolation.created_at >= date_threshold
-                    ).all()
+                    # Only select columns that exist (order_wait_time and service_wait_time may not exist yet)
+                    try:
+                        # Try to query with all columns first
+                        all_violations = db.session.query(db_manager.TableServiceViolation).filter(
+                            db_manager.TableServiceViolation.created_at >= date_threshold
+                        ).all()
+                    except Exception as db_error:
+                        # Rollback any failed transaction first
+                        try:
+                            db.session.rollback()
+                        except Exception:
+                            pass  # Ignore rollback errors
+                        
+                        # If columns don't exist, use raw SQL to query only existing columns
+                        error_str = str(db_error)
+                        if ('order_wait_time' in error_str or 'service_wait_time' in error_str or 
+                            'UndefinedColumn' in error_str or 'InFailedSqlTransaction' in error_str):
+                            logger.warning("order_wait_time/service_wait_time columns don't exist yet, using raw SQL query")
+                            # Use raw SQL to query only columns that exist
+                            try:
+                                result = db.session.execute(
+                                    db.text("""
+                                        SELECT id, channel_id, table_id, waiting_time, 
+                                               snapshot_filename, snapshot_path, alert_data, 
+                                               file_size, created_at
+                                        FROM table_service_violations
+                                        WHERE created_at >= :date_threshold
+                                    """),
+                                    {'date_threshold': date_threshold}
+                                )
+                                
+                                # Create wrapper objects with same interface
+                                class ViolationWrapper:
+                                    def __init__(self, row):
+                                        self.id = row[0]
+                                        self.channel_id = row[1]
+                                        self.table_id = row[2]
+                                        self.waiting_time = row[3]
+                                        self.snapshot_filename = row[4]
+                                        self.snapshot_path = row[5]
+                                        self.alert_data = row[6]
+                                        self.file_size = row[7]
+                                        self.created_at = row[8]
+                                        # These columns don't exist - will be extracted from alert_data
+                                        self.order_wait_time = None
+                                        self.service_wait_time = None
+                                
+                                all_violations = [ViolationWrapper(row) for row in result]
+                            except Exception as fallback_error:
+                                logger.error(f"Error in fallback SQL query: {fallback_error}")
+                                # If fallback also fails, return empty results
+                                all_violations = []
+                        else:
+                            logger.error(f"Database error getting service discipline analytics: {db_error}")
+                            # Return empty results instead of raising to prevent dashboard errors
+                            all_violations = []
                     
                     # Service discipline analytics:
                     # The reports UI currently treats any record with waiting_time > 0 as relevant.
@@ -2599,9 +2652,10 @@ def get_module_analytics(module_name):
                         violation_type = None
                         
                         try:
-                            if violation.order_wait_time is not None:
+                            # Check if columns exist before accessing (database migration may not be complete)
+                            if hasattr(violation, 'order_wait_time') and violation.order_wait_time is not None:
                                 order_wt = float(violation.order_wait_time)
-                            if violation.service_wait_time is not None:
+                            if hasattr(violation, 'service_wait_time') and violation.service_wait_time is not None:
                                 service_wt = float(violation.service_wait_time)
                             if violation.waiting_time is not None:
                                 wt = float(violation.waiting_time)
@@ -4783,6 +4837,22 @@ def delete_table_service_violation():
                 return jsonify({'success': False, 'error': 'Violation not found'})
     except Exception as e:
         logger.error(f"Error deleting table service violation: {e}")
+        return jsonify({'success': False, 'error': str(e)})
+
+@app.route('/api/clear_all_table_service_violations', methods=['POST'])
+@login_required
+def clear_all_table_service_violations():
+    """Delete ALL table service violations (use with caution!)"""
+    try:
+        with app.app_context():
+            deleted_count = db_manager.clear_all_table_service_violations()
+            return jsonify({
+                'success': True,
+                'deleted_count': deleted_count,
+                'message': f'Deleted {deleted_count} service discipline violations'
+            })
+    except Exception as e:
+        logger.error(f"Error clearing all table service violations: {e}")
         return jsonify({'success': False, 'error': str(e)})
 
 @app.route('/api/clear_old_table_service_violations', methods=['POST'])

@@ -30,12 +30,10 @@ class MaterialTheftMonitor:
 
         # Settings (can be overridden via config)
         cfg = config or {}
-        self.min_area = cfg.get("min_area", 8000)  # Increased from 4000 to reduce false positives
-        self.still_frames_required = cfg.get("still_frames_required", 30)  # Increased from 15 to 30 frames (~1 second at 30fps)
-        self.alert_cooldown = cfg.get("alert_cooldown", 30.0)  # Increased from 15 to 30 seconds
+        self.alert_cooldown = cfg.get("alert_cooldown", 5.0)  # Alert cooldown in seconds (default: 5s like Material_theft.py)
         self.person_proximity_threshold = cfg.get("person_proximity_threshold", 50)  # pixels from ROI border
         self.detect_persons = cfg.get("detect_persons", True)  # Enable person detection
-        self.background_reset_frames = cfg.get("background_reset_frames", 0)  # Reset background after N frames (0 = never reset)
+        self.confidence_threshold = cfg.get("confidence_threshold", 0.25)  # YOLO confidence threshold
 
         # ROI points: allow normalized (0-1) or absolute pixels
         default_roi = np.array([
@@ -51,10 +49,11 @@ class MaterialTheftMonitor:
         self.snapshot_dir = Path("static/material_theft_snapshots")
         self.snapshot_dir.mkdir(parents=True, exist_ok=True)
 
-        # Simple background subtractor
-        # Increased varThreshold from 16 to 30 to reduce false positives from noise and shadows
-        # Higher threshold = less sensitive to small changes (better for reducing false positives)
-        self.back_sub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=30, detectShadows=True)
+        # YOLO model for detecting weighing_machine_item class (like Material_theft.py)
+        self.model_path = cfg.get("model_path", "models/best.pt")
+        self.target_class = cfg.get("target_class", "weighing_machine_item")
+        self.item_model = get_shared_model(self.model_path)
+        logger.info(f"[{self.channel_id}] Loaded YOLO model: {self.model_path} for class: {self.target_class}")
 
         # YOLO detector for person detection (if enabled)
         self.person_detector = None
@@ -74,17 +73,11 @@ class MaterialTheftMonitor:
         self._last_alert_data = None
 
         # State
-        self.still_counter = 0
         self.last_alert_time = 0
         self.last_person_alert_time = 0
-        self.roi_mask = None  # built on first frame
-        self.frame_size = None
+        self.prev_detected = False  # Track previous detection state (for edge detection)
         self.frame_count = 0
         self._persons_near_roi = []  # Store detected persons near ROI for visualization
-        self.background_reset_done = False  # Track if background reset has been done
-        # Stability tracking to reduce false positives
-        self.recent_areas = []  # Track recent object areas for stability check
-        self.area_stability_frames = 5  # Number of frames to check area stability
 
         logger.info(f"[{self.channel_id}] MaterialTheftMonitor initialized")
 
@@ -169,142 +162,86 @@ class MaterialTheftMonitor:
         if self.frame_count == 1:
             logger.info(f"[{self.channel_id}] MaterialTheftMonitor: Processing first frame, shape={frame.shape}")
             logger.info(f"[{self.channel_id}] ROI points: {self.roi_points}")
-            logger.info(f"[{self.channel_id}] Settings: min_area={self.min_area}, still_frames={self.still_frames_required}, cooldown={self.alert_cooldown}")
-        
-        # Reset background subtractor after specified number of frames (to relearn if objects were present at startup)
-        if self.background_reset_frames > 0 and self.frame_count == self.background_reset_frames and not self.background_reset_done:
-            logger.info(f"[{self.channel_id}] Resetting background subtractor at frame {self.frame_count} to relearn background")
-            self.back_sub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=30, detectShadows=True)
-            self.background_reset_done = True
+            logger.info(f"[{self.channel_id}] Settings: target_class={self.target_class}, cooldown={self.alert_cooldown}s")
         
         now_ts = time.time()
         current_time = datetime.now()
-
         h, w = frame.shape[:2]
-        if self.roi_mask is None or self.frame_size != (w, h):
-            self.frame_size = (w, h)
-            self.roi_mask = self._build_roi_mask(w, h)
-            logger.info(f"[{self.channel_id}] Built ROI mask for frame size {w}x{h}")
 
-        fgmask = self.back_sub.apply(frame)
-        fg_roi = cv2.bitwise_and(fgmask, self.roi_mask)
+        # Use YOLO to detect weighing_machine_item class (like Material_theft.py)
+        item_detected = False
+        detected_boxes = []
+        detected_classes = []
         
-        # Increased threshold from 50 to 100 to reduce false positives from shadows and noise
-        # Higher threshold = only detect stronger foreground changes
-        _, thresh = cv2.threshold(fg_roi, 100, 255, cv2.THRESH_BINARY)
-        
-        # Less aggressive morphological operations to reduce false positives
-        # Reduced kernel sizes and iterations to avoid merging noise into false objects
-        kernel_small = np.ones((3, 3), np.uint8)  # Reduced from 5x5
-        kernel_medium = np.ones((5, 5), np.uint8)  # New medium kernel
-        kernel_large = np.ones((7, 7), np.uint8)  # Reduced from 9x9
-        
-        # First, remove small noise (opening operation)
-        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel_small, iterations=2)
-        # Then, close small gaps (but less aggressively)
-        thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel_medium, iterations=1)
-        # Finally, remove any remaining small noise
-        thresh = cv2.morphologyEx(thresh, cv2.MORPH_OPEN, kernel_small)
-
-        contours, _ = cv2.findContours(thresh, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        # Debug: Log foreground mask stats
-        if self.frame_count <= 10 or self.frame_count % 60 == 0:
-            fg_pixels = np.sum(fg_roi > 0)
-            thresh_pixels = np.sum(thresh > 0)
-            logger.info(f"[{self.channel_id}] Foreground detection: fg_pixels={fg_pixels}, thresh_pixels={thresh_pixels}, contours={len(contours) if contours else 0}")
-        
-        # Match standalone script logic: check if any contour has area > MIN_AREA
-        object_present = False
-        max_area = 0
-        if contours:
-            # Sort contours by area (largest first) for better detection
-            contours = sorted(contours, key=cv2.contourArea, reverse=True)
-            for cnt in contours:
-                area = cv2.contourArea(cnt)
-                if area > max_area:
-                    max_area = area
-                if area > self.min_area:
-                    object_present = True
-                    # Don't break - continue to find max_area for visualization
-                    if self.frame_count <= 10 or self.frame_count % 30 == 0:
-                        logger.info(f"[{self.channel_id}] ✅ Large contour found: area={area:.0f} > min_area={self.min_area}")
-        
-        # Stability check: object area should be relatively stable (not fluctuating wildly)
-        # This helps filter out false positives from shadows, reflections, or moving objects
-        is_stable = True
-        if object_present and max_area > 0:
-            self.recent_areas.append(max_area)
-            # Keep only recent frames
-            if len(self.recent_areas) > self.area_stability_frames:
-                self.recent_areas.pop(0)
+        try:
+            # Run YOLO inference
+            results = self.item_model(frame, conf=self.confidence_threshold, verbose=False)
             
-            # Check stability if we have enough frames
-            if len(self.recent_areas) >= self.area_stability_frames:
-                avg_area = np.mean(self.recent_areas)
-                std_area = np.std(self.recent_areas)
-                # If standard deviation is more than 30% of average, consider it unstable (likely noise)
-                if avg_area > 0:
-                    stability_ratio = std_area / avg_area
-                    is_stable = stability_ratio < 0.3
-                    if not is_stable and (self.frame_count <= 10 or self.frame_count % 60 == 0):
-                        logger.debug(f"[{self.channel_id}] ⚠️ Unstable object detected: area_std={std_area:.0f}, "
-                                   f"avg={avg_area:.0f}, ratio={stability_ratio:.2f} (likely false positive)")
-        else:
-            # Reset stability tracking when no object
-            self.recent_areas = []
+            # Get ROI points in pixels for checking if detection is within ROI
+            roi_points_px = self._get_roi_points_pixels(w, h).astype(np.int32)
+            
+            # Process detections
+            if len(results) > 0 and results[0].boxes is not None:
+                boxes = results[0].boxes
+                class_names = results[0].names
+                
+                for box in boxes:
+                    cls_id = int(box.cls[0])
+                    cls_name = class_names[cls_id]
+                    cls_name_normalized = cls_name.lower().replace(" ", "_")
+                    detected_classes.append(cls_name_normalized)
+                    
+                    # Check if this is the target class
+                    if cls_name_normalized == self.target_class:
+                        conf = float(box.conf[0])
+                        x1, y1, x2, y2 = map(int, box.xyxy[0].cpu().numpy())
+                        
+                        # Check if detection center is within ROI
+                        center_x = (x1 + x2) / 2
+                        center_y = (y1 + y2) / 2
+                        center_point = (center_x, center_y)
+                        
+                        if self._point_in_polygon(center_point, roi_points_px):
+                            item_detected = True
+                            detected_boxes.append({
+                                'bbox': [x1, y1, x2, y2],
+                                'confidence': conf,
+                                'class': cls_name
+                            })
+                            
+                            if self.frame_count <= 10 or self.frame_count % 30 == 0:
+                                logger.info(f"[{self.channel_id}] ✅ {self.target_class} detected in ROI: conf={conf:.2f}, center=({center_x:.0f}, {center_y:.0f})")
+            
+            # Log detected classes for debugging
+            if detected_classes and (self.frame_count <= 10 or self.frame_count % 60 == 0):
+                logger.debug(f"[{self.channel_id}] Detected classes: {detected_classes}")
+                
+        except Exception as e:
+            logger.error(f"[{self.channel_id}] Error in YOLO detection: {e}", exc_info=True)
         
-        # Only consider object present if it's stable
-        if object_present and not is_stable and len(self.recent_areas) >= self.area_stability_frames:
-            object_present = False
-            if self.frame_count % 60 == 0:
-                logger.debug(f"[{self.channel_id}] Object detection filtered out due to instability")
-        
-        # Log all contour areas if we have many small ones (might indicate objects that need area threshold adjustment)
-        if contours and max_area > 0 and max_area < self.min_area and (self.frame_count <= 10 or self.frame_count % 60 == 0):
-            areas = [cv2.contourArea(cnt) for cnt in contours[:5]]  # Top 5 largest
-            logger.info(f"[{self.channel_id}] ⚠️ Contours found but all below threshold. Top areas: {[f'{a:.0f}' for a in areas]}, min_area={self.min_area}")
-
-        # Debug logging (first 10 frames, then every 30 frames, or when object is detected)
-        if self.frame_count <= 10 or self.frame_count % 30 == 0 or object_present:
-            time_since_last_alert = now_ts - self.last_alert_time
-            logger.info(f"[{self.channel_id}] MaterialTheft Frame {self.frame_count}: "
-                       f"max_area={max_area:.0f}, min_area={self.min_area}, "
-                       f"object_present={object_present}, still_counter={self.still_counter}, "
-                       f"required={self.still_frames_required}, cooldown_remaining={max(0, self.alert_cooldown - time_since_last_alert):.1f}s")
-
-        # Track stillness - match standalone script logic exactly
-        if object_present:
-            self.still_counter += 1
-        else:
-            self.still_counter = 0
-
-        # Trigger alert only if object stayed still for required frames (match standalone: > not >=)
-        # Only trigger object alert if no person is currently near ROI (person alerts take priority)
+        # Alert logic (like Material_theft.py): alert when item is detected and wasn't detected before (edge detection)
         alert_triggered = False
         time_since_last_alert = now_ts - self.last_alert_time
         
-        # Check if person is currently near ROI (from previous detection cycle)
-        person_nearby = hasattr(self, '_persons_near_roi') and len(self._persons_near_roi) > 0
-        
-        # Log progress towards alert threshold
-        if object_present and self.still_counter > 0:
-            logger.debug(f"[{self.channel_id}] Stillness tracking: {self.still_counter}/{self.still_frames_required} frames (need {self.still_frames_required - self.still_counter} more)")
-        
-        # Only trigger object alert if no person is nearby (person alerts have priority)
-        if self.still_counter > self.still_frames_required and not person_nearby:
-            if (now_ts - self.last_alert_time) >= self.alert_cooldown:
+        if item_detected and not self.prev_detected:
+            # Item just appeared (edge detection)
+            if time_since_last_alert >= self.alert_cooldown:
                 alert_triggered = True
                 self.last_alert_time = now_ts
-                logger.warning(f"[{self.channel_id}] 🚨 OBJECT ALERT: Object placed on weighing machine! "
-                             f"Still counter: {self.still_counter}, Max area: {max_area:.0f}")
-                self._trigger_alert(frame.copy(), current_time, self.still_counter, alert_type="object_placed")
+                logger.warning(f"[{self.channel_id}] 🚨 ALERT: {self.target_class} detected on weighing machine!")
+                self._trigger_alert(frame.copy(), current_time, len(detected_boxes), alert_type="object_placed")
             else:
                 logger.debug(f"[{self.channel_id}] Alert condition met but in cooldown: "
-                           f"still_counter={self.still_counter} > {self.still_frames_required}, "
                            f"cooldown_remaining={self.alert_cooldown - time_since_last_alert:.1f}s")
-        elif self.still_counter > self.still_frames_required and person_nearby:
-            logger.debug(f"[{self.channel_id}] Object alert suppressed - person is near ROI (person alerts take priority)")
+        
+        # Update previous detection state
+        self.prev_detected = item_detected
+        
+        # Debug logging
+        if self.frame_count <= 10 or self.frame_count % 30 == 0 or item_detected:
+            logger.info(f"[{self.channel_id}] MaterialTheft Frame {self.frame_count}: "
+                       f"item_detected={item_detected}, prev_detected={self.prev_detected}, "
+                       f"cooldown_remaining={max(0, self.alert_cooldown - time_since_last_alert):.1f}s")
         
         # Person detection (check every 5 frames for performance)
         persons_near_roi = []
@@ -332,24 +269,10 @@ class MaterialTheftMonitor:
                 
                 # Log person detection status
                 if persons_near_roi:
-                    logger.info(f"[{self.channel_id}] 👤 Person(s) detected near ROI: {len(persons_near_roi)} person(s)")
+                    logger.info(f"[{self.channel_id}] 👤 Person(s) detected near ROI: {len(persons_near_roi)} person(s) - No alert (persons near weighing machine are expected)")
                 
-                # Trigger alert if person detected near ROI (with cooldown)
-                # Prioritize person alerts - trigger immediately if person is detected
-                if persons_near_roi:
-                    time_since_person_alert = now_ts - self.last_person_alert_time
-                    if time_since_person_alert >= self.alert_cooldown:
-                        self.last_person_alert_time = now_ts
-                        person_count = len(persons_near_roi)
-                        logger.warning(f"[{self.channel_id}] 🚨 PERSON ALERT: Person detected near weighing machine ROI! Count: {person_count}")
-                        # Trigger person alert immediately - this will save to DB and send to Telegram
-                        self._trigger_alert(frame.copy(), current_time, person_count, alert_type="person_near", 
-                                          person_count=person_count)
-                        alert_triggered = True
-                        # Reset object still counter when person is detected (person takes priority)
-                        self.still_counter = 0
-                    else:
-                        logger.debug(f"[{self.channel_id}] Person detected but in cooldown: {time_since_person_alert:.1f}s / {self.alert_cooldown}s")
+                # No alerts for persons near weighing machine - they are expected to be there
+                # Don't reset still counter - we still want to alert when objects are placed, even if person is nearby
             except Exception as e:
                 logger.error(f"[{self.channel_id}] Error in person detection: {e}", exc_info=True)
                 self._persons_near_roi = []
@@ -440,7 +363,6 @@ class MaterialTheftMonitor:
         
         # Add ROI label at top-left corner of ROI
         if len(roi_points_px) > 0:
-            roi_top_left = tuple(roi_points_px[0])
             # Find topmost point for label placement
             top_point = tuple(min(roi_points_px, key=lambda p: p[1]))
             label_y = max(10, top_point[1] - 10)
@@ -455,36 +377,19 @@ class MaterialTheftMonitor:
             cv2.putText(annotated, "MONITORING AREA", (label_x, label_y), 
                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 0), 2)
         
-        # Draw detected object area if present
-        if object_present and contours:
-            largest_contour = max(contours, key=cv2.contourArea)
-            area = cv2.contourArea(largest_contour)
-            
-            # Draw contour with thicker line
-            cv2.drawContours(annotated, [largest_contour], -1, (0, 0, 255), 3)
-            
-            # Draw bounding box around detected object
-            x, y, obj_w, obj_h = cv2.boundingRect(largest_contour)
-            cv2.rectangle(annotated, (x, y), (x + obj_w, y + obj_h), (0, 0, 255), 2)
-            
-            # Add label with area and status
-            M = cv2.moments(largest_contour)
-            if M["m00"] != 0:
-                cx = int(M["m10"] / M["m00"])
-                cy = int(M["m01"] / M["m00"])
+        # Draw detected items (like Material_theft.py)
+        if item_detected and detected_boxes:
+            for det in detected_boxes:
+                x1, y1, x2, y2 = det['bbox']
+                conf = det['confidence']
                 
-                # Background for text
-                label_text = f"OBJECT DETECTED: {area:.0f} px"
-                (text_width, text_height), _ = cv2.getTextSize(label_text, cv2.FONT_HERSHEY_SIMPLEX, 0.6, 2)
-                cv2.rectangle(annotated, 
-                             (cx - text_width//2 - 5, cy - text_height - 5), 
-                             (cx + text_width//2 + 5, cy + 5), 
-                             (0, 0, 255), -1)
-                cv2.putText(annotated, label_text, (cx - text_width//2, cy), 
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 255, 255), 2)
+                # Draw bounding box (red like Material_theft.py)
+                cv2.rectangle(annotated, (x1, y1), (x2, y2), (0, 0, 255), 2)
                 
-                # Draw center point
-                cv2.circle(annotated, (cx, cy), 5, (0, 0, 255), -1)
+                # Draw label
+                label_text = f"ITEM ON WEIGHING MACHINE ({conf:.2f})"
+                cv2.putText(annotated, label_text, (x1, y1 - 10),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
         
         # Draw detected persons near ROI
         if hasattr(self, '_persons_near_roi') and self._persons_near_roi:
@@ -512,8 +417,8 @@ class MaterialTheftMonitor:
                     cv2.circle(annotated, bottom_center, 12, (255, 165, 0), 2)
         
         # Enhanced status bar at top
-        status_txt = f"Material Theft / Misuse Monitor | Still: {self.still_counter}/{self.still_frames_required} frames"
-        if self.still_counter >= self.still_frames_required:
+        status_txt = f"Material Theft / Misuse Monitor | Item Detected: {'YES' if item_detected else 'NO'}"
+        if item_detected:
             status_txt += " | ALERT READY"
         
         # Status bar background
@@ -531,16 +436,10 @@ class MaterialTheftMonitor:
         # Return result in the format expected by SharedMultiModuleVideoProcessor
         return {
             'frame': annotated,
-            'object_present': object_present,
-            'still_counter': self.still_counter,
+            'object_present': item_detected,
+            'still_counter': 1 if item_detected else 0,  # Keep for compatibility
             'persons_near_roi': len(self._persons_near_roi) if hasattr(self, '_persons_near_roi') else 0
         }
-
-    def _build_roi_mask(self, w, h):
-        mask = np.zeros((h, w), dtype=np.uint8)
-        pts = self._get_roi_points_pixels(w, h).astype(np.int32)
-        cv2.fillPoly(mask, [pts], 255)
-        return mask
 
     def set_roi(self, roi_points):
         """
@@ -553,16 +452,6 @@ class MaterialTheftMonitor:
             self.frame_size = None
             logger.info(f"[{self.channel_id}] ROI updated: {len(roi_points)} points")
     
-    def reset_background(self):
-        """
-        Reset the background subtractor to relearn the background
-        Useful when objects were present during initial background learning
-        """
-        logger.info(f"[{self.channel_id}] Resetting background subtractor")
-        self.back_sub = cv2.createBackgroundSubtractorMOG2(history=500, varThreshold=30, detectShadows=True)
-        self.background_reset_done = True
-        logger.info(f"[{self.channel_id}] Background subtractor reset complete")
-
     def _get_roi_points_pixels(self, w, h):
         pts = self.roi_points.copy()
         # Detect if points are normalized (0-1 range)
@@ -587,7 +476,7 @@ class MaterialTheftMonitor:
                 logger.info(f"[{self.channel_id}] Scaled ROI points: {pts.tolist()}")
         return pts
 
-    def _trigger_alert(self, frame, current_time, count, alert_type="object_placed", person_count=None):
+    def _trigger_alert(self, frame, current_time, detection_count, alert_type="object_placed", person_count=None):
         ts = current_time.strftime("%Y%m%d_%H%M%S")
         filename = f"material_theft_{self.channel_id}_{ts}.jpg"
         filepath = self.snapshot_dir / filename
@@ -606,11 +495,12 @@ class MaterialTheftMonitor:
                 }
                 logger.info(f"[{self.channel_id}] ✅ Setting person alert message: {alert_message}")
             else:  # object_placed
-                alert_message = f"📦 Object placed on scale (still {count} frames)"
+                alert_message = f"📦 {self.target_class} detected on weighing machine"
                 alert_data = {
                     "channel_id": self.channel_id,
-                    "still_frames": count,
+                    "detection_count": detection_count,
                     "alert_type": "object_placed",
+                    "target_class": self.target_class,
                     "snapshot_path": str(filepath),
                     "timestamp": current_time.isoformat()
                 }
@@ -673,7 +563,7 @@ class MaterialTheftMonitor:
                 if alert_type == "person_near":
                     emit_data['person_count'] = person_count
                 else:
-                    emit_data['still_frames'] = count
+                    emit_data['detection_count'] = detection_count
                 self.socketio.emit('material_theft_alert', emit_data)
 
             logger.warning(f"[{self.channel_id}] Material theft alert triggered, snapshot: {filename} ({file_size} bytes)")
@@ -692,8 +582,9 @@ class MaterialTheftMonitor:
             "module": "MaterialTheftMonitor",
             "channel_id": self.channel_id,
             "last_alert_time": self.last_alert_time,
-            "still_counter": self.still_counter,
-            "frame_count": self.frame_count
+            "item_detected": self.prev_detected,
+            "frame_count": self.frame_count,
+            "target_class": self.target_class
         }
 
 

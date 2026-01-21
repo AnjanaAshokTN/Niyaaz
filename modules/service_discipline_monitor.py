@@ -1061,12 +1061,13 @@ class ServiceDisciplineMonitor:
                                     
                                     if not has_previous_interaction or (now_ts - customer["T_order_end"]) >= food_served_gap:
                                         customer["T_food_served"] = now_ts
-                                        # Service wait time = time from when waiter left to when food is served
-                                        if customer["T_order_end"]:
-                                            customer["service_wait_time"] = now_ts - customer["T_order_end"]
-                                        else:
-                                            # Fallback: use T_order_start if T_order_end not set
+                                        # Service wait time = time from when order was taken to when food is served
+                                        # This is the time from T_order_start to T_food_served
+                                        if customer["T_order_start"]:
                                             customer["service_wait_time"] = now_ts - customer["T_order_start"]
+                                        else:
+                                            # Fallback: use T_order_end if T_order_start not set (shouldn't happen)
+                                            customer["service_wait_time"] = now_ts - customer.get("T_order_end", now_ts)
                                         customer["interaction_history"].append((waiter_id, now_ts, "food"))
                                         logger.info(
                                             f"[{self.channel_id}] 🍽️ T_food_served: Waiter {waiter_id} served food to "
@@ -1255,9 +1256,56 @@ class ServiceDisciplineMonitor:
         """Trigger alert for new event-based violations"""
         customer = self.person_tracks.get(customer_track_id)
         if not customer:
+            logger.warning(f"[{self.channel_id}] ⚠️ Cannot trigger alert: customer track {customer_track_id} not found")
             return
         
+        # Log frame status for debugging
+        if frame is None:
+            logger.warning(f"[{self.channel_id}] ⚠️ Frame is None when triggering alert for table {table_id}")
+        elif frame.size == 0:
+            logger.warning(f"[{self.channel_id}] ⚠️ Frame is empty when triggering alert for table {table_id}")
+        else:
+            logger.info(f"[{self.channel_id}] 📸 Saving snapshot: frame shape={frame.shape}, table={table_id}, violation={violation_type}")
+        
         snapshot_path = self._save_snapshot_new(table_id, customer, violation_type, wait_time, current_time, frame)
+        
+        if not snapshot_path:
+            logger.error(f"[{self.channel_id}] ❌ Failed to save snapshot for table {table_id} - snapshot_path is None")
+        
+        # Calculate order_wait_time and service_wait_time at violation time
+        # These might not be set in customer dict yet if violation happens before events occur
+        now_ts = current_time.timestamp()
+        order_wait_time = None
+        service_wait_time = None
+        
+        if customer.get("T_seated"):
+            if violation_type == "order_wait":
+                # Order wait violation: calculate from T_seated to now (since T_order_start hasn't happened yet)
+                order_wait_time = now_ts - customer["T_seated"]
+            elif customer.get("T_order_start"):
+                # Order was taken: calculate from T_seated to T_order_start
+                order_wait_time = customer["T_order_start"] - customer["T_seated"]
+            else:
+                # Fallback: use the wait_time passed in (which is the order_wait for order_wait violations)
+                order_wait_time = wait_time if violation_type == "order_wait" else None
+        
+        if customer.get("T_order_start"):
+            if violation_type == "service_wait":
+                # Service wait violation: calculate from T_order_start to now (since T_food_served hasn't happened yet)
+                # Use T_order_end if available, otherwise T_order_start
+                if customer.get("T_order_end"):
+                    service_wait_time = now_ts - customer["T_order_end"]
+                else:
+                    service_wait_time = now_ts - customer["T_order_start"]
+            elif customer.get("T_food_served"):
+                # Food was served: calculate from T_order_start to T_food_served
+                service_wait_time = customer["T_food_served"] - customer["T_order_start"]
+            else:
+                # Fallback: use the wait_time passed in (which is the service_wait for service_wait violations)
+                service_wait_time = wait_time if violation_type == "service_wait" else None
+        
+        # Log calculated values for debugging
+        logger.info(f"[{self.channel_id}] 📊 Calculated wait times for violation: order_wait_time={order_wait_time}, service_wait_time={service_wait_time}, violation_type={violation_type}")
         
         alert_data = {
             "violation_type": violation_type,
@@ -1266,8 +1314,8 @@ class ServiceDisciplineMonitor:
             "T_order_start": customer.get("T_order_start"),
             "T_order_end": customer.get("T_order_end"),
             "T_food_served": customer.get("T_food_served"),
-            "order_wait_time": customer.get("order_wait_time"),
-            "service_wait_time": customer.get("service_wait_time")
+            "order_wait_time": order_wait_time,  # Use calculated value
+            "service_wait_time": service_wait_time  # Use calculated value
         }
         
         self.total_alerts += 1
@@ -1305,8 +1353,8 @@ class ServiceDisciplineMonitor:
                                 "T_order_start": customer.get("T_order_start"),
                                 "T_order_end": customer.get("T_order_end"),
                                 "T_food_served": customer.get("T_food_served"),
-                                "order_wait_time": customer.get("order_wait_time"),
-                                "service_wait_time": customer.get("service_wait_time")
+                                "order_wait_time": order_wait_time,  # Use calculated value
+                                "service_wait_time": service_wait_time  # Use calculated value
                             }
                         )
                         logger.info(f"[{self.channel_id}] ✅ Violation saved to table_service_violations: {result}")
@@ -1383,51 +1431,74 @@ class ServiceDisciplineMonitor:
             filename = f"service_{violation_type}_{table_id}_{self.channel_id}_{ts}.jpg"
             snapshot_path = snapshot_dir / filename
             
-            if frame is not None:
-                annotated = frame.copy()
-                center = customer.get("center", [0, 0])
-                cv2.circle(annotated, (int(center[0]), int(center[1])), 20, (0, 0, 255), -1)
-                
-                # Draw event timeline
-                info_y = 30
-                cv2.putText(annotated, f"Table {table_id}: {violation_type}", (10, info_y),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
-                info_y += 30
-                cv2.putText(annotated, f"Wait time: {wait_time:.1f}s", (10, info_y),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
-                
-                if customer.get("T_seated"):
-                    info_y += 25
-                    cv2.putText(annotated, f"T_seated: {customer['T_seated']:.1f}s ago", (10, info_y),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                if customer.get("T_order_start"):
-                    info_y += 25
-                    cv2.putText(annotated, f"T_order_start: {customer['T_order_start']:.1f}s ago", (10, info_y),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                if customer.get("T_order_end"):
-                    info_y += 25
-                    cv2.putText(annotated, f"T_order_end: {customer['T_order_end']:.1f}s ago", (10, info_y),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                if customer.get("T_food_served"):
-                    info_y += 25
-                    cv2.putText(annotated, f"T_food_served: {customer['T_food_served']:.1f}s ago", (10, info_y),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-                # Show both wait times
-                if customer.get("order_wait_time"):
-                    info_y += 25
-                    cv2.putText(annotated, f"Order wait: {customer['order_wait_time']:.1f}s", (10, info_y),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                if customer.get("service_wait_time"):
-                    info_y += 25
-                    cv2.putText(annotated, f"Service wait: {customer['service_wait_time']:.1f}s", (10, info_y),
-                               cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-                
-                cv2.imwrite(str(snapshot_path), annotated)
-                logger.info(f"Service discipline snapshot saved: {snapshot_path}")
+            if frame is None:
+                logger.warning(f"[{self.channel_id}] ⚠️ Cannot save snapshot: frame is None for table {table_id}")
+                return None
             
-            return str(snapshot_path.relative_to("static"))
+            if frame.size == 0:
+                logger.warning(f"[{self.channel_id}] ⚠️ Cannot save snapshot: frame is empty for table {table_id}")
+                return None
+            
+            annotated = frame.copy()
+            center = customer.get("center", [0, 0])
+            
+            # Draw customer center point
+            if center and len(center) >= 2:
+                cv2.circle(annotated, (int(center[0]), int(center[1])), 20, (0, 0, 255), -1)
+            
+            # Draw event timeline
+            info_y = 30
+            cv2.putText(annotated, f"Table {table_id}: {violation_type}", (10, info_y),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 0, 255), 2)
+            info_y += 30
+            cv2.putText(annotated, f"Wait time: {wait_time:.1f}s", (10, info_y),
+                       cv2.FONT_HERSHEY_SIMPLEX, 0.6, (0, 0, 255), 2)
+            
+            if customer.get("T_seated"):
+                info_y += 25
+                seated_ago = current_time.timestamp() - customer['T_seated']
+                cv2.putText(annotated, f"T_seated: {seated_ago:.1f}s ago", (10, info_y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            if customer.get("T_order_start"):
+                info_y += 25
+                order_start_ago = current_time.timestamp() - customer['T_order_start']
+                cv2.putText(annotated, f"T_order_start: {order_start_ago:.1f}s ago", (10, info_y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            if customer.get("T_order_end"):
+                info_y += 25
+                order_end_ago = current_time.timestamp() - customer['T_order_end']
+                cv2.putText(annotated, f"T_order_end: {order_end_ago:.1f}s ago", (10, info_y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            if customer.get("T_food_served"):
+                info_y += 25
+                food_served_ago = current_time.timestamp() - customer['T_food_served']
+                cv2.putText(annotated, f"T_food_served: {food_served_ago:.1f}s ago", (10, info_y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
+            # Show both wait times
+            if customer.get("order_wait_time"):
+                info_y += 25
+                cv2.putText(annotated, f"Order wait: {customer['order_wait_time']:.1f}s", (10, info_y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            if customer.get("service_wait_time"):
+                info_y += 25
+                cv2.putText(annotated, f"Service wait: {customer['service_wait_time']:.1f}s", (10, info_y),
+                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
+            
+            # Save snapshot
+            success = cv2.imwrite(str(snapshot_path), annotated)
+            if success:
+                file_size = os.path.getsize(snapshot_path)
+                logger.info(f"[{self.channel_id}] ✅ Service discipline snapshot saved: {snapshot_path} ({file_size} bytes)")
+                # Return relative path from static/
+                relative_path = str(snapshot_path.relative_to("static"))
+                logger.info(f"[{self.channel_id}] 📸 Snapshot relative path: {relative_path}")
+                return relative_path
+            else:
+                logger.error(f"[{self.channel_id}] ❌ Failed to write snapshot file: {snapshot_path}")
+                return None
+            
         except Exception as e:
-            logger.error(f"Failed to save service discipline snapshot: {e}")
+            logger.error(f"[{self.channel_id}] ❌ Failed to save service discipline snapshot: {e}", exc_info=True)
             return None
     
     def _save_wait_time_snapshot(self, table_id, customer_id, wait_type, wait_time, current_time, frame=None, is_violation=False):

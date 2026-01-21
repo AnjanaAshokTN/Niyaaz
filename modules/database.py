@@ -408,15 +408,18 @@ class DatabaseManager:
                 f"Table cleanliness violation saved: type={violation_type}, table={table_id}, channel={channel_id}"
             )
             
-            # Send Telegram notification
-            violation_msg = "Unclean table" if violation_type == 'unclean_table' else "Slow table reset"
-            _send_telegram_alert(
-                channel_id=channel_id,
-                alert_type='table_cleanliness_violation',
-                alert_message=f"Table {table_id}: {violation_msg}",
-                snapshot_path=snapshot_path,
-                alert_data={'table_id': table_id, 'violation_type': violation_type}
-            )
+            # Send Telegram notification (can be disabled via environment variable)
+            if not os.getenv("DISABLE_TABLE_SERVICE_ALERTS", "").lower() in ("true", "1", "yes"):
+                violation_msg = "Unclean table" if violation_type == 'unclean_table' else "Slow table reset"
+                _send_telegram_alert(
+                    channel_id=channel_id,
+                    alert_type='table_cleanliness_violation',
+                    alert_message=f"Table {table_id}: {violation_msg}",
+                    snapshot_path=snapshot_path,
+                    alert_data={'table_id': table_id, 'violation_type': violation_type}
+                )
+            else:
+                logger.debug(f"Table cleanliness violation alerts disabled via DISABLE_TABLE_SERVICE_ALERTS environment variable")
             
             return violation.id
 
@@ -2693,6 +2696,11 @@ class DatabaseManager:
             if alert_data and isinstance(alert_data, dict):
                 order_wait_time = alert_data.get("order_wait_time")
                 service_wait_time = alert_data.get("service_wait_time")
+                # Log extracted values for debugging
+                if order_wait_time is not None or service_wait_time is not None:
+                    logger.info(f"📊 Extracted wait times from alert_data: order_wait_time={order_wait_time}, service_wait_time={service_wait_time}")
+                else:
+                    logger.warning(f"⚠️ order_wait_time and service_wait_time not found in alert_data. Keys: {list(alert_data.keys())}")
             
             # Convert alert_data to JSON string if provided
             alert_data_str = None
@@ -2723,15 +2731,74 @@ class DatabaseManager:
             service_wait_str = f"{service_wait_time:.1f}s" if service_wait_time is not None else "N/A"
             logger.info(f"Table service violation saved: Table {table_id} in channel {channel_id}, waiting time: {waiting_time_str}, order wait: {order_wait_str}, service wait: {service_wait_str}")
             
-            # Send Telegram notification
-            wait_min = waiting_time / 60 if waiting_time else 0
-            _send_telegram_alert(
-                channel_id=channel_id,
-                alert_type='table_service_violation',
-                alert_message=f"Table {table_id}: Service delay - {wait_min:.1f} min wait time",
-                snapshot_path=snapshot_path,
-                alert_data={'table_id': table_id, 'waiting_time': waiting_time, 'order_wait_time': order_wait_time, 'service_wait_time': service_wait_time}
-            )
+            # Send Telegram notification (can be disabled via environment variable)
+            if not os.getenv("DISABLE_TABLE_SERVICE_ALERTS", "").lower() in ("true", "1", "yes"):
+                # Extract violation_type from alert_data to create specific message
+                violation_type = None
+                if alert_data and isinstance(alert_data, dict):
+                    violation_type = alert_data.get("violation_type")
+                
+                # Create specific message based on violation type
+                if violation_type == "order_wait":
+                    wait_min = (order_wait_time / 60) if order_wait_time else (waiting_time / 60 if waiting_time else 0)
+                    alert_message = f"Table {table_id}: Order wait time exceeded - {wait_min:.1f} min (customer waiting for order)"
+                elif violation_type == "service_wait":
+                    wait_min = (service_wait_time / 60) if service_wait_time else (waiting_time / 60 if waiting_time else 0)
+                    alert_message = f"Table {table_id}: Service wait time exceeded - {wait_min:.1f} min (food not served after order)"
+                else:
+                    # Fallback to generic message
+                    wait_min = waiting_time / 60 if waiting_time else 0
+                    alert_message = f"Table {table_id}: Service delay - {wait_min:.1f} min wait time"
+                
+                # Ensure alert_data includes violation_type for proper filtering in dashboard
+                alert_data_for_telegram = {
+                    'table_id': table_id,
+                    'waiting_time': waiting_time,
+                    'order_wait_time': order_wait_time,
+                    'service_wait_time': service_wait_time
+                }
+                if violation_type:
+                    alert_data_for_telegram['violation_type'] = violation_type
+                
+                # Resolve snapshot path to absolute path for Telegram
+                resolved_snapshot_path = None
+                if snapshot_path:
+                    # Normalize path separators (handle Windows backslashes)
+                    normalized_path = snapshot_path.replace('\\', '/')
+                    
+                    # Try to resolve the path
+                    if os.path.isabs(normalized_path):
+                        resolved_snapshot_path = normalized_path
+                    else:
+                        # Try relative to static/ (most common case)
+                        static_path = os.path.join("static", normalized_path)
+                        if os.path.exists(static_path):
+                            resolved_snapshot_path = os.path.abspath(static_path)
+                            logger.info(f"✅ Resolved snapshot path: {snapshot_path} -> {resolved_snapshot_path}")
+                        elif os.path.exists(normalized_path):
+                            resolved_snapshot_path = os.path.abspath(normalized_path)
+                            logger.info(f"✅ Resolved snapshot path (direct): {snapshot_path} -> {resolved_snapshot_path}")
+                        else:
+                            # Try with service_discipline directory
+                            service_discipline_path = os.path.join("static", "service_discipline", os.path.basename(normalized_path))
+                            if os.path.exists(service_discipline_path):
+                                resolved_snapshot_path = os.path.abspath(service_discipline_path)
+                                logger.info(f"✅ Resolved snapshot path (by filename): {snapshot_path} -> {resolved_snapshot_path}")
+                            else:
+                                logger.warning(f"❌ Snapshot path not found: {snapshot_path} (tried: {static_path}, {normalized_path}, {service_discipline_path})")
+                                resolved_snapshot_path = None
+                else:
+                    logger.warning(f"⚠️ Snapshot path is None for table {table_id} - no image will be sent to Telegram")
+                
+                _send_telegram_alert(
+                    channel_id=channel_id,
+                    alert_type='table_service_violation',
+                    alert_message=alert_message,
+                    snapshot_path=resolved_snapshot_path,
+                    alert_data=alert_data_for_telegram
+                )
+            else:
+                logger.debug(f"Table service violation alerts disabled via DISABLE_TABLE_SERVICE_ALERTS environment variable")
             
             return violation.id
             
@@ -2888,6 +2955,42 @@ class DatabaseManager:
             self.db.session.rollback()
             logger.error(f"Error deleting table service violation {violation_id}: {e}", exc_info=True)
             return False
+    
+    def clear_all_table_service_violations(self):
+        """Delete ALL table service violations (use with caution!)"""
+        try:
+            import os
+            
+            all_violations = self.TableServiceViolation.query.all()
+            deleted_count = 0
+            
+            for violation in all_violations:
+                # Delete snapshot file if exists
+                if violation.snapshot_path:
+                    full_path = os.path.join("static", violation.snapshot_path)
+                    if not os.path.exists(full_path):
+                        # Try with just the filename in static/service_discipline
+                        filename = os.path.basename(violation.snapshot_path)
+                        full_path = os.path.join("static", "service_discipline", filename)
+                    
+                    if os.path.exists(full_path):
+                        try:
+                            os.remove(full_path)
+                            logger.debug(f"Deleted snapshot file: {full_path}")
+                        except Exception as file_err:
+                            logger.warning(f"Could not delete file {full_path}: {file_err}")
+                
+                # Delete database record
+                self.db.session.delete(violation)
+                deleted_count += 1
+            
+            self.db.session.commit()
+            logger.info(f"Deleted ALL {deleted_count} table service violations")
+            return deleted_count
+        except Exception as e:
+            self.db.session.rollback()
+            logger.error(f"Error deleting all table service violations: {e}", exc_info=True)
+            return 0
     
     def clear_old_table_service_violations(self, days=7):
         """Clear old table service violations older than specified days"""

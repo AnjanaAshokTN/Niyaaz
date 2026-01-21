@@ -1208,6 +1208,7 @@
                     <h4>🕒 Recent Service Discipline Alerts</h4>
                     <div class="alert-controls">
                         <button class="btn" onclick="loadServiceDisciplineAlerts()">🔄 Refresh Alerts</button>
+                        <button class="btn btn-danger" onclick="clearAllServiceDisciplineData()" style="margin-left: 10px;">🗑️ Clear All Data</button>
                     </div>
                     <div id="service-discipline-alerts-grid" class="alert-gifs-grid">
                         <!-- Service discipline alerts will be loaded here -->
@@ -6751,40 +6752,32 @@
             return;
         }
         
+        // Calculate stats separately for order wait time and service wait time
         // Filter out unrealistic/outlier values (e.g., > 1 hour = 3600s)
-        // These are likely data errors or system issues
         const maxReasonableWait = 3600; // 1 hour maximum
         
-        // Calculate max order wait time
-        const reasonableOrderWaitTimes = violations
+        // Calculate max order wait time (time from customer sits to order taken)
+        const orderWaitTimes = violations
             .map(v => v.order_wait_time)
             .filter(w => w !== null && w !== undefined && w > 0 && w <= maxReasonableWait);
-        let maxOrderWait = 0;
-        if (reasonableOrderWaitTimes.length > 0) {
-            maxOrderWait = Math.max(...reasonableOrderWaitTimes);
-        }
+        const maxOrderWait = orderWaitTimes.length > 0 ? Math.max(...orderWaitTimes) : 0;
         
-        // Calculate max service wait time
-        const reasonableServiceWaitTimes = violations
+        // Calculate max service wait time (time from order taken to food served)
+        const serviceWaitTimes = violations
             .map(v => v.service_wait_time)
             .filter(w => w !== null && w !== undefined && w > 0 && w <= maxReasonableWait);
-        let maxServiceWait = 0;
-        if (reasonableServiceWaitTimes.length > 0) {
-            maxServiceWait = Math.max(...reasonableServiceWaitTimes);
-        }
+        const maxServiceWait = serviceWaitTimes.length > 0 ? Math.max(...serviceWaitTimes) : 0;
         
         // Calculate max total wait time
-        const reasonableWaitTimes = violations
+        const totalWaitTimes = violations
             .map(v => v.waiting_time || 0)
             .filter(w => w > 0 && w <= maxReasonableWait);
-        let maxWait = 0;
-        if (reasonableWaitTimes.length > 0) {
-            maxWait = Math.max(...reasonableWaitTimes);
-        }
+        const maxTotalWait = totalWaitTimes.length > 0 ? Math.max(...totalWaitTimes) : 0;
         
+        // Update display
         document.getElementById('sdm-max-order-wait').textContent = `${(maxOrderWait / 60).toFixed(1)} min`;
         document.getElementById('sdm-max-service-wait').textContent = `${(maxServiceWait / 60).toFixed(1)} min`;
-        document.getElementById('sdm-max-wait').textContent = `${(maxWait / 60).toFixed(1)} min`;
+        document.getElementById('sdm-max-wait').textContent = `${(maxTotalWait / 60).toFixed(1)} min`;
         document.getElementById('sdm-alerts-7d').textContent = violations.length;
     }
     
@@ -6821,6 +6814,36 @@
         } catch (error) {
             console.error('Error deleting service discipline violation:', error);
             alert('Error deleting violation. Please try again.');
+        }
+    }
+    
+    async function clearAllServiceDisciplineData() {
+        if (!confirm('⚠️ WARNING: This will delete ALL service discipline data!\n\nThis action cannot be undone. Are you sure?')) {
+            return;
+        }
+        
+        if (!confirm('Are you absolutely sure? This will permanently delete all service discipline violations and orders.')) {
+            return;
+        }
+        
+        try {
+            const response = await fetch('/api/clear_all_table_service_violations', {
+                method: 'POST',
+                headers: {
+                    'Content-Type': 'application/json'
+                }
+            });
+            
+            const result = await response.json();
+            if (result.success) {
+                alert(`✅ Successfully deleted ${result.deleted_count} service discipline records`);
+                loadServiceDisciplineAlerts();
+            } else {
+                alert('Error clearing data: ' + result.error);
+            }
+        } catch (error) {
+            console.error('Error clearing service discipline data:', error);
+            alert('Error clearing data. Please try again.');
         }
     }
     

@@ -224,6 +224,18 @@ class TelegramNotifier:
                     # Add relevant fields from alert_data
                     if 'detection_count' in alert_data:
                         message_parts.append(f"🔢 <b>Detections:</b> {alert_data['detection_count']}")
+                    if 'crowd_count' in alert_data:
+                        message_parts.append(f"👥 <b>Crowd Count:</b> {alert_data['crowd_count']}")
+                        if 'threshold' in alert_data:
+                            message_parts.append(f"📊 <b>Threshold:</b> {alert_data['threshold']}")
+                    if 'raw_count' in alert_data:
+                        message_parts.append(f"📈 <b>Raw Count:</b> {alert_data['raw_count']}")
+                    if 'long_stay_count' in alert_data:
+                        message_parts.append(f"⏱️ <b>Long Stay Count:</b> {alert_data['long_stay_count']}")
+                    if 'duration' in alert_data:
+                        duration = alert_data['duration']
+                        if isinstance(duration, (int, float)):
+                            message_parts.append(f"⏱️ <b>Duration:</b> {duration:.0f}s")
                     if 'violations' in alert_data:
                         violations = alert_data['violations']
                         if isinstance(violations, list):
@@ -232,6 +244,20 @@ class TelegramNotifier:
                     if 'waiting_time' in alert_data:
                         wait_min = alert_data['waiting_time'] / 60
                         message_parts.append(f"⏱️ <b>Wait Time:</b> {wait_min:.1f} min")
+                    if 'order_wait_time' in alert_data and alert_data['order_wait_time'] is not None:
+                        order_wait_min = alert_data['order_wait_time'] / 60
+                        message_parts.append(f"📝 <b>Order Wait:</b> {order_wait_min:.1f} min")
+                    if 'service_wait_time' in alert_data and alert_data['service_wait_time'] is not None:
+                        service_wait_min = alert_data['service_wait_time'] / 60
+                        message_parts.append(f"🍽️ <b>Service Wait:</b> {service_wait_min:.1f} min")
+                    if 'table_id' in alert_data:
+                        message_parts.append(f"🪑 <b>Table:</b> {alert_data['table_id']}")
+                    if 'violation_type' in alert_data:
+                        violation_type = alert_data['violation_type']
+                        if violation_type == 'order_wait':
+                            message_parts.append(f"⚠️ <b>Type:</b> Order Wait Violation")
+                        elif violation_type == 'service_wait':
+                            message_parts.append(f"⚠️ <b>Type:</b> Service Wait Violation")
             
             message = "\n".join(message_parts)
             
@@ -272,6 +298,7 @@ class TelegramNotifier:
             'unauthorized_entry_alert': '🚫',
             'queue_alert': '👥',
             'people_alert': '👥',
+            'crowd_alert': '👥',
             'cash_alert': '💰',
             'dresscode_alert': '👔',
             'ppe_alert': '🦺',
@@ -296,6 +323,7 @@ class TelegramNotifier:
             'unauthorized_entry_alert': 'Unauthorized Entry',
             'queue_alert': 'Queue Alert',
             'people_alert': 'People Alert',
+            'crowd_alert': 'Crowd Detection',
             'cash_alert': 'Cash Detection',
             'dresscode_alert': 'Dress Code Violation',
             'ppe_alert': 'PPE Violation',
@@ -341,6 +369,7 @@ class TelegramNotifier:
             "static/alerts",
             "static/fall_snapshots",
             "static/cash_snapshots",
+            "static/service_discipline",
             "static/smoking_snapshots",
             "static/phone_snapshots",
             "static/dresscode_snapshots",
