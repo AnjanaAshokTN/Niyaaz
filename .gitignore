@@ -11,7 +11,10 @@ __pycache__/
 static/
 media/
 videos/
+*.avi
+*.mp4
 
 # OS files
 .DS_Store
 Thumbs.db
+
