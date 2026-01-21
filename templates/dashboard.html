@@ -3676,6 +3676,7 @@
         // Auto-load alerts when reports tab is opened
         if (tabId === 'CrowdDetection-reports') {
             loadCrowdAlerts();
+            updateCrowdStats();
         }
         // Similar to existing openTab function but for modal tabs
         const modal = document.getElementById('modalModuleContent');
@@ -6460,6 +6461,22 @@
 
     // ==================== Crowd Detection Functions ====================
     
+    async function updateCrowdStats() {
+        try {
+            const response = await fetch('/api/get_module_analytics/CrowdDetection');
+            const result = await response.json();
+            
+            if (result.success && result.analytics) {
+                const analytics = result.analytics;
+                document.getElementById('crowd-total-alerts').textContent = analytics.total_alerts_7days || 0;
+                document.getElementById('crowd-current-crowd').textContent = analytics.current_crowd_count || 0;
+                document.getElementById('crowd-active-channels').textContent = analytics.active_channels || 0;
+            }
+        } catch (error) {
+            console.error('Error updating crowd stats:', error);
+        }
+    }
+    
     async function loadCrowdAlerts() {
         try {
             const response = await fetch('/api/get_alert_gifs?alert_type=crowd_alert&limit=50&days=7');
@@ -6467,6 +6484,8 @@
             
             if (result.success) {
                 displayCrowdAlerts(result.alert_gifs || result.alerts || []);
+                // Update stats after loading alerts
+                updateCrowdStats();
             } else {
                 console.error('Failed to load crowd alerts:', result.error);
             }

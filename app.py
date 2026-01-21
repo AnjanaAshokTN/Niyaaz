@@ -295,7 +295,8 @@ def load_channels_from_config(config_file='config/channels.json'):
                             module = QueueMonitor(channel_id, socketio, db_manager, app)
                             # Load configuration from database first
                             try:
-                                module.load_configuration()
+                                with app.app_context():
+                                    module.load_configuration()
                             except Exception as e:
                                 logger.warning(f"Could not load QueueMonitor config from DB: {e}")
                             # Apply ROI configuration from config file if provided (overrides DB)
@@ -457,7 +458,8 @@ def load_channels_from_config(config_file='config/channels.json'):
                             logger.info(f"  ✓ Added ServiceDisciplineMonitor to channel {channel_id}")
                             # Load from DB
                             try:
-                                module.load_configuration()
+                                with app.app_context():
+                                    module.load_configuration()
                             except Exception as e:
                                 logger.warning(f"Could not load ServiceDisciplineMonitor config from DB: {e}")
                             # Apply ROIs from config
@@ -532,7 +534,8 @@ def load_channels_from_config(config_file='config/channels.json'):
                             module = CrowdDetection(channel_id, socketio, db_manager, app)
                             # Load configuration from database first
                             try:
-                                module.load_configuration()
+                                with app.app_context():
+                                    module.load_configuration()
                             except Exception as e:
                                 logger.warning(f"Could not load CrowdDetection config from DB: {e}")
                             # Apply ROI configuration from config file if provided (overrides DB)
@@ -551,7 +554,8 @@ def load_channels_from_config(config_file='config/channels.json'):
                             logger.info(f"  ✓ Added TableServiceMonitor to channel {channel_id}")
                             # Load configuration from database first
                             try:
-                                module.load_configuration()
+                                with app.app_context():
+                                    module.load_configuration()
                             except Exception as e:
                                 logger.warning(f"Could not load TableServiceMonitor config from DB: {e}")
                             # Apply table ROIs from config file if provided
@@ -1064,7 +1068,8 @@ def start_channel():
             module = QueueMonitor(channel_id, socketio, db_manager, app)
             # Load saved ROI configuration from database
             try:
-                module.load_configuration()
+                with app.app_context():
+                    module.load_configuration()
                 logger.info(f"✅ Loaded QueueMonitor configuration from database for {channel_id}")
             except Exception as e:
                 logger.warning(f"⚠️ Could not load QueueMonitor config from DB for {channel_id}: {e}")
@@ -2422,8 +2427,9 @@ def get_module_analytics(module_name):
             try:
                 with app.app_context():
                     alert_count = db_manager.get_alert_count('crowd_alert', days=7)
-                    total_alerts = alert_count
-            except:
+                    total_alerts = alert_count if alert_count is not None else 0
+            except Exception as e:
+                logger.error(f"Error getting crowd alert count: {e}", exc_info=True)
                 total_alerts = 0
             
             analytics = {

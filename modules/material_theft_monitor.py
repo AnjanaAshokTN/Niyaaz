@@ -14,7 +14,6 @@ import os
 from datetime import datetime
 from pathlib import Path
 
-from .gif_recorder import AlertGifRecorder
 from .model_manager import get_shared_model, release_shared_model  # kept for consistency; not used here
 from .yolo_detector import YOLODetector
 
@@ -65,12 +64,6 @@ class MaterialTheftMonitor:
                 person_class_id=0  # Person class in yolo11n.pt
             )
             logger.info(f"[{self.channel_id}] Person detection enabled for MaterialTheftMonitor")
-
-        # GIF recorder (optional, reusing alert GIF workflow)
-        self.gif_recorder = AlertGifRecorder(buffer_size=90, gif_duration=3.0, fps=5)
-        self._was_recording_alert = False
-        self._last_alert_message = None
-        self._last_alert_data = None
 
         # State
         self.last_alert_time = 0
@@ -219,33 +212,9 @@ class MaterialTheftMonitor:
         except Exception as e:
             logger.error(f"[{self.channel_id}] Error in YOLO detection: {e}", exc_info=True)
         
-        # Alert logic (like Material_theft.py): alert when item is detected and wasn't detected before (edge detection)
-        alert_triggered = False
-        time_since_last_alert = now_ts - self.last_alert_time
-        
-        if item_detected and not self.prev_detected:
-            # Item just appeared (edge detection)
-            if time_since_last_alert >= self.alert_cooldown:
-                alert_triggered = True
-                self.last_alert_time = now_ts
-                logger.warning(f"[{self.channel_id}] 🚨 ALERT: {self.target_class} detected on weighing machine!")
-                self._trigger_alert(frame.copy(), current_time, len(detected_boxes), alert_type="object_placed")
-            else:
-                logger.debug(f"[{self.channel_id}] Alert condition met but in cooldown: "
-                           f"cooldown_remaining={self.alert_cooldown - time_since_last_alert:.1f}s")
-        
-        # Update previous detection state
-        self.prev_detected = item_detected
-        
-        # Debug logging
-        if self.frame_count <= 10 or self.frame_count % 30 == 0 or item_detected:
-            logger.info(f"[{self.channel_id}] MaterialTheft Frame {self.frame_count}: "
-                       f"item_detected={item_detected}, prev_detected={self.prev_detected}, "
-                       f"cooldown_remaining={max(0, self.alert_cooldown - time_since_last_alert):.1f}s")
-        
-        # Person detection (check every 5 frames for performance)
+        # Person detection (check every 3 frames for better responsiveness while maintaining performance)
         persons_near_roi = []
-        if self.person_detector and self.frame_count % 5 == 0:
+        if self.person_detector and self.frame_count % 3 == 0:
             try:
                 person_detections = self.person_detector.detect_persons(frame)
                 roi_points_px = self._get_roi_points_pixels(w, h).astype(np.int32)
@@ -269,10 +238,7 @@ class MaterialTheftMonitor:
                 
                 # Log person detection status
                 if persons_near_roi:
-                    logger.info(f"[{self.channel_id}] 👤 Person(s) detected near ROI: {len(persons_near_roi)} person(s) - No alert (persons near weighing machine are expected)")
-                
-                # No alerts for persons near weighing machine - they are expected to be there
-                # Don't reset still counter - we still want to alert when objects are placed, even if person is nearby
+                    logger.info(f"[{self.channel_id}] 👤 Person(s) detected near ROI: {len(persons_near_roi)} person(s)")
             except Exception as e:
                 logger.error(f"[{self.channel_id}] Error in person detection: {e}", exc_info=True)
                 self._persons_near_roi = []
@@ -280,70 +246,43 @@ class MaterialTheftMonitor:
             # Keep previous person detections for visualization between detection frames
             if not hasattr(self, '_persons_near_roi'):
                 self._persons_near_roi = []
-
-        # Add frame to GIF buffer (always buffer frames)
-        self.gif_recorder.add_frame(frame)
+            # Use cached person detections from last detection frame
+            persons_near_roi = self._persons_near_roi if hasattr(self, '_persons_near_roi') else []
         
-        # Only start GIF recording when alert is actually triggered
-        if alert_triggered and not self.gif_recorder.is_recording_alert:
-            alert_info = {
-                'type': 'material_theft_alert',
-                'message': self._last_alert_message or f"Object placed on scale - {self.channel_id}",
-                'timestamp': current_time.isoformat()
-            }
-            self.gif_recorder.start_alert_recording(alert_info)
-            logger.info(f"[{self.channel_id}] Started GIF recording for material theft alert")
-        elif self.gif_recorder.is_recording_alert:
-            # Continue recording if already recording
-            self.gif_recorder.add_alert_frame(frame)
-
-        # When recording finishes, save GIF entry to DB
-        if self._was_recording_alert and not self.gif_recorder.is_recording_alert:
-            gif_info = self.gif_recorder.get_last_gif_info()
-            logger.info(f"[{self.channel_id}] GIF recording finished. gif_info={gif_info}, has_db_manager={self.db_manager is not None}, has_alert_message={self._last_alert_message is not None}")
-            if gif_info and self.db_manager and self._last_alert_message:
-                try:
-                    # Normalize path separators for cross-platform compatibility
-                    gif_path = gif_info.get('gif_path', '').replace('\\', '/')
-                    gif_filename = gif_info.get('gif_filename', '')
-                    
-                    payload = {
-                        'gif_filename': gif_filename,
-                        'gif_path': gif_path,
-                        'frame_count': gif_info.get('frame_count', 0),
-                        'duration': gif_info.get('duration', 0.0)  # Fixed: use 'duration' not 'gif_duration'
-                    }
-                    logger.info(f"[{self.channel_id}] Saving material theft alert GIF to database: {gif_filename} (path: {gif_path})")
-                    if self.app:
-                        with self.app.app_context():
-                            # Save GIF to database
-                            gif_id = self.db_manager.save_alert_gif(
-                                self.channel_id,
-                                'material_theft_alert',
-                                payload,
-                                alert_message=self._last_alert_message,
-                                alert_data=self._last_alert_data
-                            )
-                            logger.info(f"[{self.channel_id}] ✅ Material theft alert GIF saved to database: ID={gif_id}, {payload.get('gif_filename')}")
-                    else:
-                        # Save GIF to database
-                        gif_id = self.db_manager.save_alert_gif(
-                            self.channel_id,
-                            'material_theft_alert',
-                            payload,
-                            alert_message=self._last_alert_message,
-                            alert_data=self._last_alert_data
-                        )
-                        logger.info(f"[{self.channel_id}] ✅ Material theft alert GIF saved to database: ID={gif_id}, {payload.get('gif_filename')}")
-                except Exception as e:
-                    logger.error(f"[{self.channel_id}] ❌ Error saving material theft GIF to database: {e}", exc_info=True)
-                finally:
-                    # Clear stored alert info after saving
-                    self._last_alert_message = None
-                    self._last_alert_data = None
-            elif not self._last_alert_message:
-                logger.warning(f"[{self.channel_id}] ⚠️ GIF recording finished but no alert message stored - alert may not have been triggered")
-        self._was_recording_alert = self.gif_recorder.is_recording_alert
+        # Alert logic: 
+        # - ALWAYS alert when item is detected (regardless of person presence)
+        # - Suppress alerts only when person passes by WITHOUT item (person passing is normal)
+        alert_triggered = False
+        time_since_last_alert = now_ts - self.last_alert_time
+        has_person_nearby = len(persons_near_roi) > 0
+        
+        if item_detected and not self.prev_detected:
+            # Item just appeared (edge detection) - ALWAYS alert regardless of person presence
+            if time_since_last_alert >= self.alert_cooldown:
+                alert_triggered = True
+                self.last_alert_time = now_ts
+                if has_person_nearby:
+                    logger.warning(f"[{self.channel_id}] 🚨 ALERT: {self.target_class} detected on weighing machine (person nearby)!")
+                else:
+                    logger.warning(f"[{self.channel_id}] 🚨 ALERT: {self.target_class} detected on weighing machine (no person nearby)!")
+                self._trigger_alert(frame.copy(), current_time, len(detected_boxes), alert_type="object_placed")
+            else:
+                logger.debug(f"[{self.channel_id}] Alert condition met but in cooldown: "
+                           f"cooldown_remaining={self.alert_cooldown - time_since_last_alert:.1f}s")
+        elif not item_detected and has_person_nearby:
+            # Person near machine without item - this is normal, suppress any potential alerts
+            if self.frame_count <= 10 or self.frame_count % 60 == 0:
+                logger.debug(f"[{self.channel_id}] Person near weighing machine without item - no alert (normal behavior, person passing by)")
+        
+        # Update previous detection state
+        self.prev_detected = item_detected
+        
+        # Debug logging
+        if self.frame_count <= 10 or self.frame_count % 30 == 0 or item_detected:
+            logger.info(f"[{self.channel_id}] MaterialTheft Frame {self.frame_count}: "
+                       f"item_detected={item_detected}, prev_detected={self.prev_detected}, "
+                       f"persons_nearby={has_person_nearby}, "
+                       f"cooldown_remaining={max(0, self.alert_cooldown - time_since_last_alert):.1f}s")
 
         # Draw ROI overlay with enhanced visibility
         annotated = frame.copy()
@@ -417,9 +356,14 @@ class MaterialTheftMonitor:
                     cv2.circle(annotated, bottom_center, 12, (255, 165, 0), 2)
         
         # Enhanced status bar at top
+        persons_nearby_count = len(self._persons_near_roi) if hasattr(self, '_persons_near_roi') and self._persons_near_roi else 0
         status_txt = f"Material Theft / Misuse Monitor | Item Detected: {'YES' if item_detected else 'NO'}"
         if item_detected:
             status_txt += " | ALERT READY"
+            if persons_nearby_count > 0:
+                status_txt += " (Person Nearby)"
+        elif persons_nearby_count > 0:
+            status_txt += " | Person Passing (No Item - No Alert)"
         
         # Status bar background
         cv2.rectangle(annotated, (0, 0), (annotated.shape[1], 40), (40, 40, 40), -1)
@@ -481,8 +425,18 @@ class MaterialTheftMonitor:
         filename = f"material_theft_{self.channel_id}_{ts}.jpg"
         filepath = self.snapshot_dir / filename
         try:
-            cv2.imwrite(str(filepath), frame)
+            # Save snapshot and verify it was created
+            success = cv2.imwrite(str(filepath), frame)
+            if not success:
+                raise Exception(f"cv2.imwrite returned False - snapshot file was not created")
+            
+            # Verify file exists and has content
+            if not filepath.exists():
+                raise Exception(f"Snapshot file does not exist after cv2.imwrite: {filepath}")
+            
             file_size = os.path.getsize(filepath)
+            if file_size == 0:
+                raise Exception(f"Snapshot file is empty (0 bytes): {filepath}")
 
             if alert_type == "person_near":
                 alert_message = f"👤 Person detected near weighing machine (count: {person_count})"
@@ -506,11 +460,7 @@ class MaterialTheftMonitor:
                 }
                 logger.info(f"[{self.channel_id}] ✅ Setting object alert message: {alert_message}")
 
-            # Store for GIF saving hookup
-            self._last_alert_message = alert_message
-            self._last_alert_data = alert_data
-
-            # Save alert to database (use log_alert for snapshot-based alerts)
+            # Save alert to database (snapshot-based alerts only, no GIF)
             if self.db_manager:
                 try:
                     if self.app:
@@ -522,7 +472,7 @@ class MaterialTheftMonitor:
                                 alert_message,
                                 alert_data=alert_data
                             )
-                            # Also save as alert GIF entry (for snapshot)
+                            # Save snapshot to alert_gifs table (for dashboard display - using snapshot, not GIF)
                             self.db_manager.save_alert_gif(
                                 self.channel_id,
                                 'material_theft_alert',
@@ -530,7 +480,7 @@ class MaterialTheftMonitor:
                                 alert_message=alert_message,
                                 alert_data=alert_data
                             )
-                            logger.info(f"[{self.channel_id}] Material theft alert saved to database: {alert_message}")
+                            logger.info(f"[{self.channel_id}] Material theft alert snapshot saved to database: {alert_message}")
                     else:
                         # Log alert to database
                         self.db_manager.log_alert(
@@ -539,7 +489,7 @@ class MaterialTheftMonitor:
                             alert_message,
                             alert_data=alert_data
                         )
-                        # Also save as alert GIF entry (for snapshot)
+                        # Save snapshot to alert_gifs table (for dashboard display - using snapshot, not GIF)
                         self.db_manager.save_alert_gif(
                             self.channel_id,
                             'material_theft_alert',
@@ -547,7 +497,7 @@ class MaterialTheftMonitor:
                             alert_message=alert_message,
                             alert_data=alert_data
                         )
-                        logger.info(f"[{self.channel_id}] Material theft alert saved to database: {alert_message}")
+                        logger.info(f"[{self.channel_id}] Material theft alert snapshot saved to database: {alert_message}")
                 except Exception as db_error:
                     logger.error(f"[{self.channel_id}] Error saving material theft alert to database: {db_error}", exc_info=True)
 
@@ -567,15 +517,11 @@ class MaterialTheftMonitor:
                 self.socketio.emit('material_theft_alert', emit_data)
 
             logger.warning(f"[{self.channel_id}] Material theft alert triggered, snapshot: {filename} ({file_size} bytes)")
-            
-            # Debug: Check if db_manager is available
-            if not self.db_manager:
-                logger.warning(f"[{self.channel_id}] ⚠️ db_manager is None - alerts will not be saved to database!")
-            else:
-                logger.info(f"[{self.channel_id}] ✅ db_manager is available - alert should be saved")
                 
         except Exception as e:
-            logger.error(f"[{self.channel_id}] Error saving material theft snapshot: {e}", exc_info=True)
+            logger.error(f"[{self.channel_id}] ❌ Error saving material theft snapshot: {e}. Alert NOT saved to database.", exc_info=True)
+            # Don't save to database if snapshot creation failed
+            return
 
     def get_status(self):
         return {
