@@ -2578,9 +2578,13 @@ def get_module_analytics(module_name):
             try:
                 with app.app_context():
                     from datetime import datetime, timedelta
+                    from zoneinfo import ZoneInfo
                     import json
                     
-                    date_threshold = datetime.now() - timedelta(days=7)
+                    # Use IST timezone to match database timestamps (which use get_ist_now())
+                    ist_now = datetime.now(ZoneInfo("Asia/Kolkata"))
+                    date_threshold = ist_now - timedelta(days=7)
+                    logger.info(f"📊 Service Discipline Analytics: Querying violations from last 7 days (since {date_threshold} IST)")
                     
                     # Get all violations from last 7 days
                     # Use db_manager.TableServiceViolation instead of importing
@@ -2590,6 +2594,7 @@ def get_module_analytics(module_name):
                         all_violations = db.session.query(db_manager.TableServiceViolation).filter(
                             db_manager.TableServiceViolation.created_at >= date_threshold
                         ).all()
+                        logger.info(f"📊 Service Discipline Analytics: Found {len(all_violations)} total violations in database (last 7 days)")
                     except Exception as db_error:
                         # Rollback any failed transaction first
                         try:
@@ -2717,6 +2722,8 @@ def get_module_analytics(module_name):
                                     service_wait_times.append(service_wt)
                     
                     total_alerts = len(relevant_violations)
+                    logger.info(f"📊 Service Discipline Analytics: {total_alerts} relevant violations after filtering (excluded types: {excluded_types})")
+                    logger.info(f"📊 Wait times found: {len(wait_times)} total, {len(order_wait_times)} order, {len(service_wait_times)} service")
                     
                     # Calculate avg/max wait time with filtering to avoid bad/outlier values.
                     # Some records can be huge due to tracking resets/timeouts; keep a sane range.
@@ -2771,8 +2778,14 @@ def get_module_analytics(module_name):
                     else:
                         avg_service_wait_time = 0
             except Exception as e:
-                logger.error(f"Error getting service discipline analytics: {e}")
+                logger.error(f"❌ Error getting service discipline analytics: {e}", exc_info=True)
                 total_alerts = 0
+                avg_wait_time = 0
+                max_wait_time = 0
+                avg_order_wait_time = 0
+                max_order_wait_time = 0
+                avg_service_wait_time = 0
+                max_service_wait_time = 0
             
             analytics = {
                 'module': 'Service Discipline',
@@ -4157,43 +4170,57 @@ def handle_subscribe_stream(data):
             # Channel is configured but processor not running - try to restart it
             logger.info(f"Channel {channel_id} not in shared_video_processors, attempting to restart...")
             
-            # Get channel configuration from channel_modules, database, or config file
+            # Get channel configuration - channels.json is source of truth
             rtsp_url = None
             
-            # First, try to get from database
+            # FIRST: Always check channels.json (source of truth) and update database
             try:
-                with app.app_context():
-                    rtsp_channel = db_manager.get_rtsp_channel(channel_id)
-                    if rtsp_channel:
-                        rtsp_url = rtsp_channel.get('rtsp_url')
-                        logger.info(f"Found RTSP URL for {channel_id} in database")
+                config_path = Path('config/channels.json')
+                if config_path.exists():
+                    with open(config_path, 'r') as f:
+                        config = json.load(f)
+                        for ch in config.get('channels', []):
+                            if ch.get('channel_id') == channel_id:
+                                rtsp_url = ch.get('rtsp_url')
+                                if rtsp_url:
+                                    logger.info(f"Found RTSP URL for {channel_id} in channels.json: {rtsp_url}")
+                                    # Update database with correct URL from channels.json
+                                    try:
+                                        channel_name = ch.get('channel_name', channel_id)
+                                        with app.app_context():
+                                            db_manager.save_rtsp_channel(
+                                                channel_id, 
+                                                channel_name, 
+                                                rtsp_url,
+                                                description=f"Auto-updated from channels.json"
+                                            )
+                                            logger.info(f"💾 Updated database with correct RTSP URL for {channel_id}")
+                                    except Exception as db_error:
+                                        logger.warning(f"Could not update database URL for {channel_id}: {db_error}")
+                                break
             except Exception as e:
-                logger.debug(f"Could not get RTSP URL from database: {e}")
+                logger.error(f"Error reading channels.json: {e}")
             
-            # If not in database, try app_configs
+            # Fallback to database only if not found in channels.json
+            if not rtsp_url:
+                try:
+                    with app.app_context():
+                        rtsp_channel = db_manager.get_rtsp_channel(channel_id)
+                        if rtsp_channel:
+                            rtsp_url = rtsp_channel.get('rtsp_url')
+                            if rtsp_url:
+                                logger.info(f"Found RTSP URL for {channel_id} in database (fallback)")
+                except Exception as e:
+                    logger.debug(f"Could not get RTSP URL from database: {e}")
+            
+            # If still not found, try app_configs
             if not rtsp_url and channel_id in channel_modules:
                 for module_type in channel_modules[channel_id].keys():
                     if module_type in app_configs and channel_id in app_configs[module_type]['channels']:
                         rtsp_url = app_configs[module_type]['channels'][channel_id].get('video_source')
                         if rtsp_url:
-                            logger.info(f"Found RTSP URL for {channel_id} in app_configs")
+                            logger.info(f"Found RTSP URL for {channel_id} in app_configs (fallback)")
                             break
-            
-            # If still not found, try channels.json
-            if not rtsp_url:
-                try:
-                    config_path = Path('config/channels.json')
-                    if config_path.exists():
-                        with open(config_path, 'r') as f:
-                            config = json.load(f)
-                            for ch in config.get('channels', []):
-                                if ch.get('channel_id') == channel_id:
-                                    rtsp_url = ch.get('rtsp_url')
-                                    if rtsp_url:
-                                        logger.info(f"Found RTSP URL for {channel_id} in channels.json")
-                                    break
-                except Exception as e:
-                    logger.error(f"Error reading channels.json: {e}")
             
             if rtsp_url:
                 # Attempt to create and start processor
@@ -4268,14 +4295,78 @@ def handle_subscribe_stream(data):
                 logger.info(f"Channel {channel_id} processor appears to be working (thread_alive={thread_alive}, has_frame={has_recent_frame}), allowing connection")
                 # Continue with broadcast setup below - processor is functional
             else:
-                # Processor truly not running
-                logger.warning(f"Channel {channel_id} processor exists but is not running (thread not alive, no recent frames)")
-                emit('stream_error', {
-                    'app_name': app_name,
-                    'channel_id': channel_id,
-                    'error': f'Channel {channel_id} is not running. RTSP connection may have failed.'
-                })
-                return
+                # Processor truly not running - try to restart it with correct URL from channels.json
+                logger.warning(f"Channel {channel_id} processor exists but is not running (thread not alive, no recent frames). Attempting restart...")
+                
+                # Get correct RTSP URL from channels.json (source of truth)
+                rtsp_url = None
+                try:
+                    config_path = Path('config/channels.json')
+                    if config_path.exists():
+                        with open(config_path, 'r') as f:
+                            config = json.load(f)
+                            for ch in config.get('channels', []):
+                                if ch.get('channel_id') == channel_id:
+                                    rtsp_url = ch.get('rtsp_url')
+                                    if rtsp_url:
+                                        logger.info(f"Found RTSP URL for {channel_id} in channels.json: {rtsp_url}")
+                                    break
+                except Exception as e:
+                    logger.error(f"Error reading channels.json: {e}")
+                
+                if rtsp_url:
+                    try:
+                        # Stop and remove old processor (if it exists)
+                        if channel_id in shared_video_processors:
+                            old_processor = shared_video_processors[channel_id]
+                            try:
+                                old_processor.stop()
+                            except:
+                                pass
+                            del shared_video_processors[channel_id]
+                        
+                        # Create new processor with correct URL
+                        logger.info(f"Restarting processor for {channel_id} with RTSP URL from channels.json")
+                        processor = SharedMultiModuleVideoProcessor(
+                            video_source=rtsp_url,
+                            channel_id=channel_id,
+                            fps_limit=30
+                        )
+                        shared_video_processors[channel_id] = processor
+                        
+                        # Re-add modules
+                        if channel_id in channel_modules and channel_modules[channel_id]:
+                            for module_type, module in channel_modules[channel_id].items():
+                                processor.add_module(module_type, module)
+                        
+                        # Start processor
+                        if processor.start():
+                            logger.info(f"✓ Successfully restarted channel {channel_id} with URL from channels.json")
+                            # Continue with broadcast setup below
+                        else:
+                            logger.warning(f"⚠ Failed to restart channel {channel_id} - RTSP connection may be unavailable")
+                            emit('stream_error', {
+                                'app_name': app_name,
+                                'channel_id': channel_id,
+                                'error': f'Channel {channel_id} restart failed. RTSP connection may be unavailable.'
+                            })
+                            return
+                    except Exception as e:
+                        logger.error(f"Error restarting channel {channel_id}: {e}", exc_info=True)
+                        emit('stream_error', {
+                            'app_name': app_name,
+                            'channel_id': channel_id,
+                            'error': f'Failed to restart channel {channel_id}: {str(e)}'
+                        })
+                        return
+                else:
+                    logger.warning(f"Could not find RTSP URL for {channel_id} in channels.json")
+                    emit('stream_error', {
+                        'app_name': app_name,
+                        'channel_id': channel_id,
+                        'error': f'Channel {channel_id} is not running and RTSP URL not found in channels.json.'
+                    })
+                    return
         
         # Start broadcast thread for this channel if not already running
         # Start broadcast thread for this channel if not already running.

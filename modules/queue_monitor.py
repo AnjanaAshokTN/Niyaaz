@@ -94,6 +94,20 @@ class QueueMonitor:
             img_size=640,
             person_class_id=0,
         )
+        
+        # --- Uniform detector (fallback for counter area) ---
+        # Use best.pt to detect uniforms when person detection fails
+        # This helps in cases where person detection misses staff but uniform detection works
+        try:
+            from .model_manager import get_shared_model
+            self.uniform_detector = get_shared_model("models/best.pt", device='auto')
+            self.use_uniform_fallback = True
+            self.uniform_classes = {"Uniform_black", "Uniform_grey", "Uniform_cream", "Uniform_blue"}
+            logger.info(f"[{self.channel_id}] ✅ Uniform detector initialized for counter area fallback")
+        except Exception as e:
+            logger.warning(f"[{self.channel_id}] ⚠️ Failed to initialize uniform detector fallback: {e}")
+            self.uniform_detector = None
+            self.use_uniform_fallback = False
 
         # ROI configuration (normalized 0–1 coordinates)
         self.roi_config = {
@@ -139,6 +153,11 @@ class QueueMonitor:
 
         # Performance
         self.frame_count = 0
+        
+        # Uniform detection cache (for fallback)
+        self.uniform_detection_cache = None
+        self.uniform_cache_frame_count = 0
+        self.uniform_cache_interval = 10  # Cache uniform detections for 10 frames
         self.detection_cache = None
         self.cache_frame_count = 0
         self.cache_interval = 2  # run YOLO every 2 frames
@@ -1154,13 +1173,82 @@ class QueueMonitor:
         else:
             detections = self.detection_cache or []
 
+        # Update ROI cache first (needed for fallback check)
+        self._update_roi_cache(w, h)
+        
         # Classify into queue/counter
         queue_dets, counter_dets = self._classify_detections(detections, w, h)
+        
+        # Fallback: If no person detections in counter area OR counter count is 0, try uniform detection
+        # This helps when person detection fails but uniform detection works (e.g., camera_2)
+        # Also check if we have detections but they're not being counted (tracking/dwell time issue)
+        should_use_fallback = (
+            self.use_uniform_fallback 
+            and self.uniform_detector 
+            and len(counter_dets) == 0
+        )
+        
+        if should_use_fallback:
+            counter_roi = self.roi_cache.get("secondary")
+            if counter_roi and counter_roi.get("polygon") is not None:
+                try:
+                    # Run uniform detection (with caching for performance)
+                    if (
+                        self.uniform_detection_cache is None
+                        or self.frame_count - self.uniform_cache_frame_count >= self.uniform_cache_interval
+                    ):
+                        uniform_results = self.uniform_detector(
+                            frame,
+                            conf=self.detector.confidence_threshold,
+                            iou=0.45,
+                            verbose=False
+                        )
+                        self.uniform_detection_cache = uniform_results
+                        self.uniform_cache_frame_count = self.frame_count
+                    else:
+                        uniform_results = self.uniform_detection_cache
+                    
+                    # Extract uniform detections
+                    uniform_dets = []
+                    if uniform_results and len(uniform_results) > 0:
+                        boxes = uniform_results[0].boxes
+                        class_names = uniform_results[0].names
+                        for box in boxes:
+                            class_id = int(box.cls[0])
+                            class_name = class_names[class_id]
+                            conf = float(box.conf[0])
+                            
+                            # Only consider uniform classes
+                            if class_name in self.uniform_classes:
+                                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                                bbox = [int(x1), int(y1), int(x2), int(y2)]
+                                center = [(x1 + x2) / 2, (y1 + y2) / 2]
+                                bottom_center = [center[0], y2]  # Bottom center point
+                                
+                                # Check if uniform is in counter ROI
+                                if self._point_in_polygon_optimized(
+                                    bottom_center, 
+                                    counter_roi["polygon"], 
+                                    counter_roi["bbox"]
+                                ):
+                                    uniform_dets.append({
+                                        "bbox": bbox,
+                                        "center": center,
+                                        "confidence": conf,
+                                        "class_name": class_name,
+                                        "from_uniform": True  # Mark as uniform detection
+                                    })
+                    
+                    # If we found uniforms in counter area, add them as counter detections
+                    if uniform_dets:
+                        logger.info(f"[{self.channel_id}] 🔄 Fallback: Found {len(uniform_dets)} uniform(s) in counter area (person detection missed them)")
+                        counter_dets.extend(uniform_dets)
+                except Exception as e:
+                    logger.warning(f"[{self.channel_id}] ⚠️ Uniform fallback detection failed: {e}")
 
         # Bounding boxes removed - only ROI and text overlays are shown
 
-        # Draw ROIs
-        self._update_roi_cache(w, h)
+        # Draw ROIs (ROI cache already updated above)
         if self.roi_cache["main"] is not None:
             cv2.polylines(
                 original_frame,
@@ -1182,6 +1270,74 @@ class QueueMonitor:
         self.queue_count = self._update_person_tracking(queue_dets, "queue")
         self.counter_count = self._update_person_tracking(counter_dets, "counter")
         
+        # Second-level fallback: If counter count is still 0 after tracking, try uniform detection again
+        # This catches cases where person detection found people but they weren't counted (tracking/dwell time issue)
+        # This is especially useful for camera_2 where person detection sometimes fails
+        if (self.use_uniform_fallback 
+            and self.uniform_detector 
+            and self.counter_count == 0):
+            counter_roi = self.roi_cache.get("secondary")
+            if counter_roi and counter_roi.get("polygon") is not None:
+                try:
+                    # Run uniform detection (with caching for performance)
+                    if (
+                        self.uniform_detection_cache is None
+                        or self.frame_count - self.uniform_cache_frame_count >= self.uniform_cache_interval
+                    ):
+                        uniform_results = self.uniform_detector(
+                            frame,
+                            conf=self.detector.confidence_threshold,
+                            iou=0.45,
+                            verbose=False
+                        )
+                        self.uniform_detection_cache = uniform_results
+                        self.uniform_cache_frame_count = self.frame_count
+                    else:
+                        uniform_results = self.uniform_detection_cache
+                    
+                    # Extract uniform detections in counter ROI
+                    uniform_dets_in_counter = []
+                    if uniform_results and len(uniform_results) > 0:
+                        boxes = uniform_results[0].boxes
+                        class_names = uniform_results[0].names
+                        for box in boxes:
+                            class_id = int(box.cls[0])
+                            class_name = class_names[class_id]
+                            conf = float(box.conf[0])
+                            
+                            # Only consider uniform classes
+                            if class_name in self.uniform_classes:
+                                x1, y1, x2, y2 = box.xyxy[0].cpu().numpy()
+                                bbox = [int(x1), int(y1), int(x2), int(y2)]
+                                center = [(x1 + x2) / 2, (y1 + y2) / 2]
+                                bottom_center = [center[0], y2]  # Bottom center point
+                                
+                                # Check if uniform is in counter ROI
+                                if self._point_in_polygon_optimized(
+                                    bottom_center, 
+                                    counter_roi["polygon"], 
+                                    counter_roi["bbox"]
+                                ):
+                                    uniform_dets_in_counter.append({
+                                        "bbox": bbox,
+                                        "center": center,
+                                        "confidence": conf,
+                                        "class_name": class_name,
+                                        "from_uniform": True
+                                    })
+                    
+                    # If we found uniforms in counter area, directly set counter count
+                    if uniform_dets_in_counter:
+                        logger.warning(
+                            f"[{self.channel_id}] 🔄 Second-level fallback: Found {len(uniform_dets_in_counter)} uniform(s) in counter area "
+                            f"after tracking returned 0. Setting counter_count directly."
+                        )
+                        # Directly set counter count based on uniform detections
+                        # This bypasses tracking/dwell time issues
+                        self.counter_count = len(uniform_dets_in_counter)
+                except Exception as e:
+                    logger.warning(f"[{self.channel_id}] ⚠️ Second-level uniform fallback failed: {e}")
+        
         # Store current detections for alert checking
         self._last_counter_dets = counter_dets
         self._last_queue_dets = queue_dets
@@ -1194,6 +1350,8 @@ class QueueMonitor:
             logger.info(f"  Dwell time threshold: {self.settings.get('dwell_time_threshold', 0.0)}")
             if len(counter_dets) > 0 and self.counter_count == 0:
                 logger.warning(f"  ⚠️ WARNING: {len(counter_dets)} counter detections but count is 0! (dwell time filtering?)")
+            if self.counter_count == 0 and self.use_uniform_fallback:
+                logger.info(f"  Uniform fallback enabled: {self.uniform_detector is not None}")
 
         # Overlay counts
         cv2.putText(

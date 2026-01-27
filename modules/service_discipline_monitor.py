@@ -20,6 +20,7 @@ import logging
 import numpy as np
 import json
 import time
+import os
 import torch
 from datetime import datetime
 from pathlib import Path
@@ -835,6 +836,20 @@ class ServiceDisciplineMonitor:
             # Detect interactions and update events
             self._detect_interactions(current_time)
             
+            # Log tracking status periodically for debugging
+            if self.frame_count % 300 == 0:  # Every 10 seconds at 30fps
+                total_tracks = len(self.person_tracks)
+                total_tables = len(self.table_tracking)
+                total_customers = sum(len(info.get("customer_track_ids", [])) for info in self.table_tracking.values())
+                total_waiters = sum(len(info.get("waiter_track_ids", [])) for info in self.table_tracking.values())
+                logger.info(
+                    f"[{self.channel_id}] 📊 Tracking Status (Frame {self.frame_count}): "
+                    f"{total_tracks} total tracks, {total_tables} tables, "
+                    f"{total_customers} customers, {total_waiters} waiters, "
+                    f"{len(person_detections_list)} person detections, "
+                    f"{len(uniform_detections_list)} uniform detections"
+                )
+            
             # Check for violations - use clean_frame for snapshots to avoid other modules' annotations
             self._check_violations(current_time, clean_frame)
             
@@ -1131,14 +1146,35 @@ class ServiceDisciplineMonitor:
         if self.frame_count % 300 == 0:
             total_customers = sum(len(info.get("customer_track_ids", [])) for info in self.table_tracking.values())
             total_tables = len(self.table_tracking)
-            logger.debug(
-                f"[{self.channel_id}] 📊 Violation check: {total_tables} tables, {total_customers} customers tracked, "
-                f"thresholds: order={order_threshold}s, service={service_threshold}s"
+            logger.info(
+                f"[{self.channel_id}] 📊 Violation Check (Frame {self.frame_count}): order_threshold={order_threshold}s, "
+                f"service_threshold={service_threshold}s, cooldown={cooldown}s, "
+                f"{total_tables} tables, {total_customers} customers tracked"
             )
             if total_tables == 0:
                 logger.warning(f"[{self.channel_id}] ⚠️ No tables being tracked! Check table ROIs configuration.")
             if total_customers == 0:
-                logger.debug(f"[{self.channel_id}] No customers currently tracked (may be normal if no customers present)")
+                logger.info(f"[{self.channel_id}] ℹ️ No customers currently tracked (may be normal if no customers present)")
+            else:
+                # Log details about tracked customers for debugging
+                for table_id, table_info in list(self.table_tracking.items())[:3]:  # Show first 3 tables
+                    customer_ids = table_info.get("customer_track_ids", [])
+                    if customer_ids:
+                        logger.info(f"[{self.channel_id}] 📋 Table {table_id}: {len(customer_ids)} customer(s) tracked")
+                        for customer_id in customer_ids[:2]:  # Show first 2 customers per table
+                            if customer_id in self.person_tracks:
+                                customer = self.person_tracks[customer_id]
+                                t_seated = customer.get("T_seated")
+                                t_order = customer.get("T_order_start")
+                                t_food = customer.get("T_food_served")
+                                if t_seated:
+                                    order_wait = (now_ts - t_seated) if t_order is None else (t_order - t_seated)
+                                    logger.info(
+                                        f"[{self.channel_id}]   Customer {customer_id}: T_seated={t_seated:.1f}, "
+                                        f"T_order_start={t_order:.1f if t_order else 'None'}, "
+                                        f"T_food_served={t_food:.1f if t_food else 'None'}, "
+                                        f"order_wait={order_wait:.1f}s"
+                                    )
         
         for table_id, table_info in self.table_tracking.items():
             customer_ids = table_info.get("customer_track_ids", [])
@@ -1157,6 +1193,21 @@ class ServiceDisciplineMonitor:
                     # Still waiting for order
                     order_wait = now_ts - customer["T_seated"]
                     
+                    # Log wait time progress periodically
+                    if self.frame_count % 300 == 0 and order_wait > 60:  # Log if waiting more than 1 minute
+                        logger.info(
+                            f"[{self.channel_id}] ⏱️ Table {table_id}, customer {customer_id}: "
+                            f"Order wait {order_wait:.1f}s (threshold: {order_threshold}s, "
+                            f"remaining: {order_threshold - order_wait:.1f}s)"
+                        )
+                    # Also log when approaching threshold (within 30 seconds) - ALWAYS log, not just every 300 frames
+                    if order_wait > (order_threshold - 30) and order_wait <= order_threshold:
+                        logger.warning(
+                            f"[{self.channel_id}] ⚠️ APPROACHING THRESHOLD: Table {table_id}, customer {customer_id}: "
+                            f"Order wait {order_wait:.1f}s (threshold: {order_threshold}s, "
+                            f"remaining: {order_threshold - order_wait:.1f}s)"
+                        )
+                    
                     # Only save to database when violation threshold is exceeded
                     if order_wait > order_threshold:
                         time_since_last_alert = (now_ts - last_alert_time) if last_alert_time else float('inf')
@@ -1164,6 +1215,11 @@ class ServiceDisciplineMonitor:
                             logger.warning(
                                 f"[{self.channel_id}] ⚠️ Order wait violation: Table {table_id}, "
                                 f"customer {customer_id} waiting {order_wait:.1f}s (threshold: {order_threshold}s)"
+                            )
+                            logger.info(
+                                f"[{self.channel_id}] 🔔 Triggering alert: order_wait={order_wait:.1f}s, "
+                                f"threshold={order_threshold}s, cooldown={cooldown}s, "
+                                f"time_since_last_alert={time_since_last_alert:.1f}s"
                             )
                             logger.info(
                                 f"[{self.channel_id}] 📊 Violation details: T_seated={customer.get('T_seated')}, "
@@ -1196,9 +1252,17 @@ class ServiceDisciplineMonitor:
                         # Waiter still at table or hasn't left yet - don't count service wait
                         service_wait = 0
                     
+                    # Log service wait progress periodically
+                    if self.frame_count % 300 == 0 and service_wait > 30:  # Log if waiting more than 30 seconds
+                        logger.info(
+                            f"[{self.channel_id}] ⏱️ Table {table_id}, customer {customer_id}: "
+                            f"Service wait {service_wait:.1f}s (threshold: {service_threshold}s, "
+                            f"T_order_end={'set' if customer.get('T_order_end') else 'not set'})"
+                        )
+                    
                     # Only track service wait if waiter has left (T_order_end is set)
                     # Only save to database when violation threshold is exceeded
-                    if service_wait > service_threshold:
+                    if service_wait > service_threshold and customer.get("T_order_end"):
                         time_since_last_alert = (now_ts - last_alert_time) if last_alert_time else float('inf')
                         if last_alert_time is None or time_since_last_alert > cooldown:
                             logger.warning(
@@ -1270,7 +1334,14 @@ class ServiceDisciplineMonitor:
         snapshot_path = self._save_snapshot_new(table_id, customer, violation_type, wait_time, current_time, frame)
         
         if not snapshot_path:
-            logger.error(f"[{self.channel_id}] ❌ Failed to save snapshot for table {table_id} - snapshot_path is None")
+            logger.error(
+                f"[{self.channel_id}] ❌ Failed to save snapshot for table {table_id} - snapshot_path is None. "
+                f"Alert will NOT be saved to database. Frame: {'valid' if frame is not None and frame.size > 0 else 'invalid'}"
+            )
+            # Don't save alert if snapshot failed - similar to material theft monitor
+            return
+        
+        logger.info(f"[{self.channel_id}] ✅ Snapshot saved successfully: {snapshot_path}")
         
         # Calculate order_wait_time and service_wait_time at violation time
         # These might not be set in customer dict yet if violation happens before events occur
@@ -1357,7 +1428,10 @@ class ServiceDisciplineMonitor:
                                 "service_wait_time": service_wait_time  # Use calculated value
                             }
                         )
-                        logger.info(f"[{self.channel_id}] ✅ Violation saved to table_service_violations: {result}")
+                        if result:
+                            logger.info(f"[{self.channel_id}] ✅ Violation saved to table_service_violations: ID={result}, order_wait={order_wait_time}, service_wait={service_wait_time}")
+                        else:
+                            logger.error(f"[{self.channel_id}] ❌ Failed to save violation: add_table_service_violation returned None")
                 else:
                     logger.warning(f"[{self.channel_id}] ⚠️ Cannot save violation: Flask app context not available")
                     result = None
@@ -1390,8 +1464,8 @@ class ServiceDisciplineMonitor:
                                     "T_order_start": customer.get("T_order_start"),
                                     "T_order_end": customer.get("T_order_end"),
                                     "T_food_served": customer.get("T_food_served"),
-                                    "order_wait_time": customer.get("order_wait_time"),
-                                    "service_wait_time": customer.get("service_wait_time")
+                                    "order_wait_time": order_wait_time,  # Use calculated value, not customer dict
+                                    "service_wait_time": service_wait_time  # Use calculated value, not customer dict
                                 }
                             )
                     else:
@@ -1409,8 +1483,8 @@ class ServiceDisciplineMonitor:
                                 "T_order_start": customer.get("T_order_start"),
                                 "T_order_end": customer.get("T_order_end"),
                                 "T_food_served": customer.get("T_food_served"),
-                                "order_wait_time": customer.get("order_wait_time"),
-                                "service_wait_time": customer.get("service_wait_time")
+                                "order_wait_time": order_wait_time,  # Use calculated value, not customer dict
+                                "service_wait_time": service_wait_time  # Use calculated value, not customer dict
                             }
                         )
                     logger.info(f"[{self.channel_id}] ✅ Alert logged to general alerts table: {alert_message}")
@@ -1425,19 +1499,22 @@ class ServiceDisciplineMonitor:
     def _save_snapshot_new(self, table_id, customer, violation_type, wait_time, current_time, frame=None):
         """Save snapshot with event information"""
         try:
+            # Validate frame first
+            if frame is None:
+                logger.error(f"[{self.channel_id}] ❌ Cannot save snapshot: frame is None for table {table_id}, violation_type={violation_type}")
+                return None
+            
+            if not hasattr(frame, 'size') or frame.size == 0:
+                logger.error(f"[{self.channel_id}] ❌ Cannot save snapshot: frame is empty or invalid for table {table_id}, violation_type={violation_type}, frame type={type(frame)}")
+                return None
+            
             snapshot_dir = Path("static/service_discipline")
             snapshot_dir.mkdir(parents=True, exist_ok=True)
             ts = current_time.strftime("%Y%m%d_%H%M%S")
             filename = f"service_{violation_type}_{table_id}_{self.channel_id}_{ts}.jpg"
             snapshot_path = snapshot_dir / filename
             
-            if frame is None:
-                logger.warning(f"[{self.channel_id}] ⚠️ Cannot save snapshot: frame is None for table {table_id}")
-                return None
-            
-            if frame.size == 0:
-                logger.warning(f"[{self.channel_id}] ⚠️ Cannot save snapshot: frame is empty for table {table_id}")
-                return None
+            logger.info(f"[{self.channel_id}] 📸 Attempting to save snapshot: {snapshot_path}, frame shape={frame.shape if hasattr(frame, 'shape') else 'unknown'}")
             
             annotated = frame.copy()
             center = customer.get("center", [0, 0])
@@ -1474,28 +1551,62 @@ class ServiceDisciplineMonitor:
                 food_served_ago = current_time.timestamp() - customer['T_food_served']
                 cv2.putText(annotated, f"T_food_served: {food_served_ago:.1f}s ago", (10, info_y),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
-            # Show both wait times
-            if customer.get("order_wait_time"):
+            # Calculate and show both wait times (use calculated values if available, otherwise calculate from timestamps)
+            now_ts = current_time.timestamp()
+            order_wait_display = None
+            service_wait_display = None
+            
+            # Calculate order wait time
+            if customer.get("T_seated"):
+                if customer.get("T_order_start"):
+                    order_wait_display = customer["T_order_start"] - customer["T_seated"]
+                else:
+                    order_wait_display = now_ts - customer["T_seated"]
+            
+            # Calculate service wait time
+            if customer.get("T_order_start"):
+                if customer.get("T_food_served"):
+                    service_wait_display = customer["T_food_served"] - customer["T_order_start"]
+                elif customer.get("T_order_end"):
+                    service_wait_display = now_ts - customer["T_order_end"]
+                else:
+                    service_wait_display = now_ts - customer["T_order_start"]
+            
+            # Display calculated wait times
+            if order_wait_display is not None:
                 info_y += 25
-                cv2.putText(annotated, f"Order wait: {customer['order_wait_time']:.1f}s", (10, info_y),
+                cv2.putText(annotated, f"Order wait: {order_wait_display:.1f}s", (10, info_y),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
-            if customer.get("service_wait_time"):
+            if service_wait_display is not None:
                 info_y += 25
-                cv2.putText(annotated, f"Service wait: {customer['service_wait_time']:.1f}s", (10, info_y),
+                cv2.putText(annotated, f"Service wait: {service_wait_display:.1f}s", (10, info_y),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 0), 1)
             
             # Save snapshot
             success = cv2.imwrite(str(snapshot_path), annotated)
-            if success:
-                file_size = os.path.getsize(snapshot_path)
-                logger.info(f"[{self.channel_id}] ✅ Service discipline snapshot saved: {snapshot_path} ({file_size} bytes)")
-                # Return relative path from static/
-                relative_path = str(snapshot_path.relative_to("static"))
-                logger.info(f"[{self.channel_id}] 📸 Snapshot relative path: {relative_path}")
-                return relative_path
-            else:
-                logger.error(f"[{self.channel_id}] ❌ Failed to write snapshot file: {snapshot_path}")
+            if not success:
+                logger.error(f"[{self.channel_id}] ❌ cv2.imwrite() failed to write snapshot file: {snapshot_path}")
                 return None
+            
+            # Verify file was actually created and is not empty
+            if not snapshot_path.exists():
+                logger.error(f"[{self.channel_id}] ❌ Snapshot file does not exist after cv2.imwrite(): {snapshot_path}")
+                return None
+            
+            file_size = os.path.getsize(snapshot_path)
+            if file_size == 0:
+                logger.error(f"[{self.channel_id}] ❌ Snapshot file is empty (0 bytes): {snapshot_path}")
+                try:
+                    snapshot_path.unlink()  # Delete empty file
+                except:
+                    pass
+                return None
+            
+            logger.info(f"[{self.channel_id}] ✅ Service discipline snapshot saved: {snapshot_path} ({file_size} bytes)")
+            # Return relative path from static/
+            relative_path = str(snapshot_path.relative_to("static"))
+            logger.info(f"[{self.channel_id}] 📸 Snapshot relative path: {relative_path}")
+            return relative_path
             
         except Exception as e:
             logger.error(f"[{self.channel_id}] ❌ Failed to save service discipline snapshot: {e}", exc_info=True)

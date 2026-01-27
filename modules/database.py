@@ -2726,77 +2726,106 @@ class DatabaseManager:
             self.db.session.add(violation)
             self.db.session.commit()
             
+            violation_id = violation.id
             waiting_time_str = f"{waiting_time:.1f}s" if waiting_time is not None else "N/A"
             order_wait_str = f"{order_wait_time:.1f}s" if order_wait_time is not None else "N/A"
             service_wait_str = f"{service_wait_time:.1f}s" if service_wait_time is not None else "N/A"
-            logger.info(f"Table service violation saved: Table {table_id} in channel {channel_id}, waiting time: {waiting_time_str}, order wait: {order_wait_str}, service wait: {service_wait_str}")
+            snapshot_info = f"snapshot_path={snapshot_path}" if snapshot_path else "snapshot_path=None (NO SNAPSHOT)"
+            logger.info(f"✅ Table service violation saved: ID={violation_id}, Table {table_id} in channel {channel_id}, waiting time: {waiting_time_str}, order wait: {order_wait_str}, service wait: {service_wait_str}, {snapshot_info}")
             
             # Send Telegram notification (can be disabled via environment variable)
+            # IMPORTANT: Only send Telegram alert if snapshot_path exists and file is valid
             if not os.getenv("DISABLE_TABLE_SERVICE_ALERTS", "").lower() in ("true", "1", "yes"):
-                # Extract violation_type from alert_data to create specific message
-                violation_type = None
-                if alert_data and isinstance(alert_data, dict):
-                    violation_type = alert_data.get("violation_type")
-                
-                # Create specific message based on violation type
-                if violation_type == "order_wait":
-                    wait_min = (order_wait_time / 60) if order_wait_time else (waiting_time / 60 if waiting_time else 0)
-                    alert_message = f"Table {table_id}: Order wait time exceeded - {wait_min:.1f} min (customer waiting for order)"
-                elif violation_type == "service_wait":
-                    wait_min = (service_wait_time / 60) if service_wait_time else (waiting_time / 60 if waiting_time else 0)
-                    alert_message = f"Table {table_id}: Service wait time exceeded - {wait_min:.1f} min (food not served after order)"
-                else:
-                    # Fallback to generic message
-                    wait_min = waiting_time / 60 if waiting_time else 0
-                    alert_message = f"Table {table_id}: Service delay - {wait_min:.1f} min wait time"
-                
-                # Ensure alert_data includes violation_type for proper filtering in dashboard
-                alert_data_for_telegram = {
-                    'table_id': table_id,
-                    'waiting_time': waiting_time,
-                    'order_wait_time': order_wait_time,
-                    'service_wait_time': service_wait_time
-                }
-                if violation_type:
-                    alert_data_for_telegram['violation_type'] = violation_type
-                
-                # Resolve snapshot path to absolute path for Telegram
-                resolved_snapshot_path = None
-                if snapshot_path:
-                    # Normalize path separators (handle Windows backslashes)
-                    normalized_path = snapshot_path.replace('\\', '/')
+                    # Extract violation_type from alert_data to create specific message
+                    violation_type = None
+                    if alert_data and isinstance(alert_data, dict):
+                        violation_type = alert_data.get("violation_type")
                     
-                    # Try to resolve the path
-                    if os.path.isabs(normalized_path):
-                        resolved_snapshot_path = normalized_path
+                    # Create specific message based on violation type
+                    if violation_type == "order_wait":
+                        wait_min = (order_wait_time / 60) if order_wait_time else (waiting_time / 60 if waiting_time else 0)
+                        alert_message = f"Table {table_id}: Order wait time exceeded - {wait_min:.1f} min (customer waiting for order)"
+                    elif violation_type == "service_wait":
+                        wait_min = (service_wait_time / 60) if service_wait_time else (waiting_time / 60 if waiting_time else 0)
+                        alert_message = f"Table {table_id}: Service wait time exceeded - {wait_min:.1f} min (food not served after order)"
                     else:
-                        # Try relative to static/ (most common case)
-                        static_path = os.path.join("static", normalized_path)
-                        if os.path.exists(static_path):
-                            resolved_snapshot_path = os.path.abspath(static_path)
-                            logger.info(f"✅ Resolved snapshot path: {snapshot_path} -> {resolved_snapshot_path}")
-                        elif os.path.exists(normalized_path):
-                            resolved_snapshot_path = os.path.abspath(normalized_path)
-                            logger.info(f"✅ Resolved snapshot path (direct): {snapshot_path} -> {resolved_snapshot_path}")
+                        # Fallback to generic message
+                        wait_min = waiting_time / 60 if waiting_time else 0
+                        alert_message = f"Table {table_id}: Service delay - {wait_min:.1f} min wait time"
+                    
+                    # Ensure alert_data includes violation_type for proper filtering in dashboard
+                    alert_data_for_telegram = {
+                        'table_id': table_id,
+                        'waiting_time': waiting_time,
+                        'order_wait_time': order_wait_time,
+                        'service_wait_time': service_wait_time
+                    }
+                    if violation_type:
+                        alert_data_for_telegram['violation_type'] = violation_type
+                    
+                    # Resolve snapshot path to absolute path for Telegram
+                    resolved_snapshot_path = None
+                    if snapshot_path:
+                        # Normalize path separators (handle Windows backslashes)
+                        normalized_path = snapshot_path.replace('\\', '/')
+                        
+                        # Try to resolve the path
+                        if os.path.isabs(normalized_path):
+                            resolved_snapshot_path = normalized_path
                         else:
-                            # Try with service_discipline directory
-                            service_discipline_path = os.path.join("static", "service_discipline", os.path.basename(normalized_path))
-                            if os.path.exists(service_discipline_path):
-                                resolved_snapshot_path = os.path.abspath(service_discipline_path)
-                                logger.info(f"✅ Resolved snapshot path (by filename): {snapshot_path} -> {resolved_snapshot_path}")
+                            # Try relative to static/ (most common case)
+                            static_path = os.path.join("static", normalized_path)
+                            if os.path.exists(static_path):
+                                resolved_snapshot_path = os.path.abspath(static_path)
+                                logger.info(f"✅ Resolved snapshot path: {snapshot_path} -> {resolved_snapshot_path}")
+                            elif os.path.exists(normalized_path):
+                                resolved_snapshot_path = os.path.abspath(normalized_path)
+                                logger.info(f"✅ Resolved snapshot path (direct): {snapshot_path} -> {resolved_snapshot_path}")
                             else:
-                                logger.warning(f"❌ Snapshot path not found: {snapshot_path} (tried: {static_path}, {normalized_path}, {service_discipline_path})")
-                                resolved_snapshot_path = None
-                else:
-                    logger.warning(f"⚠️ Snapshot path is None for table {table_id} - no image will be sent to Telegram")
-                
-                _send_telegram_alert(
-                    channel_id=channel_id,
-                    alert_type='table_service_violation',
-                    alert_message=alert_message,
-                    snapshot_path=resolved_snapshot_path,
-                    alert_data=alert_data_for_telegram
-                )
+                                # Try with service_discipline directory
+                                service_discipline_path = os.path.join("static", "service_discipline", os.path.basename(normalized_path))
+                                if os.path.exists(service_discipline_path):
+                                    resolved_snapshot_path = os.path.abspath(service_discipline_path)
+                                    logger.info(f"✅ Resolved snapshot path (by filename): {snapshot_path} -> {resolved_snapshot_path}")
+                                else:
+                                    logger.warning(f"❌ Snapshot path not found: {snapshot_path} (tried: {static_path}, {normalized_path}, {service_discipline_path})")
+                                    resolved_snapshot_path = None
+                    else:
+                        logger.warning(f"⚠️ Snapshot path is None for table {table_id} - no image will be sent to Telegram")
+                        resolved_snapshot_path = None
+                    
+                    # Send Telegram notification - send text even if no image
+                    # This ensures alerts are always sent, even if snapshot fails
+                    if resolved_snapshot_path and os.path.exists(resolved_snapshot_path):
+                        file_size_check = os.path.getsize(resolved_snapshot_path)
+                        if file_size_check > 0:
+                            logger.info(f"📸 Sending Telegram alert with image: {resolved_snapshot_path} ({file_size_check} bytes)")
+                            _send_telegram_alert(
+                                channel_id=channel_id,
+                                alert_type='table_service_violation',
+                                alert_message=alert_message,
+                                snapshot_path=resolved_snapshot_path,
+                                alert_data=alert_data_for_telegram
+                            )
+                        else:
+                            logger.warning(f"⚠️ Snapshot file is empty (0 bytes) for table {table_id} - sending Telegram alert without image")
+                            _send_telegram_alert(
+                                channel_id=channel_id,
+                                alert_type='table_service_violation',
+                                alert_message=alert_message,
+                                snapshot_path=None,  # No image
+                                alert_data=alert_data_for_telegram
+                            )
+                    else:
+                        logger.warning(f"⚠️ No valid snapshot available for table {table_id} - sending Telegram alert without image (path: {snapshot_path})")
+                        # Still send alert, just without image
+                        _send_telegram_alert(
+                            channel_id=channel_id,
+                            alert_type='table_service_violation',
+                            alert_message=alert_message,
+                            snapshot_path=None,  # No image
+                            alert_data=alert_data_for_telegram
+                        )
             else:
                 logger.debug(f"Table service violation alerts disabled via DISABLE_TABLE_SERVICE_ALERTS environment variable")
             
@@ -2854,19 +2883,84 @@ class DatabaseManager:
         from datetime import datetime, timedelta
         
         try:
-            query = self.TableServiceViolation.query
-            
-            # Apply date filter if days is provided
-            if days is not None and isinstance(days, (int, float)) and days > 0:
-                date_threshold = datetime.now() - timedelta(days=days)
-                query = query.filter(self.TableServiceViolation.created_at >= date_threshold)
-            
-            if channel_id:
-                query = query.filter_by(channel_id=channel_id)
-            if table_id:
-                query = query.filter_by(table_id=table_id)
-            
-            violations = query.order_by(self.TableServiceViolation.created_at.desc()).limit(limit).all()
+            # Check if columns exist, use raw SQL if they don't
+            try:
+                # Try to query with all columns first
+                query = self.TableServiceViolation.query
+                
+                # Apply date filter if days is provided
+                if days is not None and isinstance(days, (int, float)) and days > 0:
+                    date_threshold = datetime.now() - timedelta(days=days)
+                    query = query.filter(self.TableServiceViolation.created_at >= date_threshold)
+                
+                if channel_id:
+                    query = query.filter_by(channel_id=channel_id)
+                if table_id:
+                    query = query.filter_by(table_id=table_id)
+                
+                violations = query.order_by(self.TableServiceViolation.created_at.desc()).limit(limit).all()
+            except Exception as db_error:
+                # Columns don't exist - use raw SQL query
+                error_str = str(db_error).lower()
+                if ('order_wait_time' in error_str or 'service_wait_time' in error_str or 
+                    'undefinedcolumn' in error_str or 'infailedsqltransaction' in error_str):
+                    logger.warning("order_wait_time/service_wait_time columns don't exist yet, using raw SQL query")
+                    try:
+                        # Build WHERE clause
+                        where_clauses = []
+                        params = {}
+                        
+                        if days is not None and isinstance(days, (int, float)) and days > 0:
+                            date_threshold = datetime.now() - timedelta(days=days)
+                            where_clauses.append("created_at >= :date_threshold")
+                            params['date_threshold'] = date_threshold
+                        
+                        if channel_id:
+                            where_clauses.append("channel_id = :channel_id")
+                            params['channel_id'] = channel_id
+                        
+                        if table_id:
+                            where_clauses.append("table_id = :table_id")
+                            params['table_id'] = table_id
+                        
+                        where_sql = " AND ".join(where_clauses) if where_clauses else "1=1"
+                        
+                        # Use raw SQL to query only columns that exist
+                        sql = f"""
+                            SELECT id, channel_id, table_id, waiting_time, 
+                                   snapshot_filename, snapshot_path, alert_data, 
+                                   file_size, created_at
+                            FROM table_service_violations
+                            WHERE {where_sql}
+                            ORDER BY created_at DESC
+                            LIMIT :limit
+                        """
+                        params['limit'] = limit
+                        
+                        result_rows = self.db.session.execute(self.db.text(sql), params).fetchall()
+                        
+                        # Convert to violation-like objects
+                        class ViolationWrapper:
+                            def __init__(self, row):
+                                self.id = row[0]
+                                self.channel_id = row[1]
+                                self.table_id = row[2]
+                                self.waiting_time = row[3]
+                                self.order_wait_time = None  # Column doesn't exist
+                                self.service_wait_time = None  # Column doesn't exist
+                                self.snapshot_filename = row[4]
+                                self.snapshot_path = row[5]
+                                self.alert_data = row[6]
+                                self.file_size = row[7]
+                                self.created_at = row[8]
+                        
+                        violations = [ViolationWrapper(row) for row in result_rows]
+                    except Exception as fallback_error:
+                        logger.error(f"Error in fallback SQL query: {fallback_error}")
+                        return []
+                else:
+                    # Different error - re-raise
+                    raise db_error
             
             # Filter by violation_type if specified (stored in alert_data JSON)
             if violation_type:
@@ -2891,13 +2985,30 @@ class DatabaseManager:
                     except:
                         alert_data = violation.alert_data
                 
+                # Extract order_wait_time and service_wait_time from alert_data if columns don't exist
+                order_wait_time = None
+                service_wait_time = None
+                
+                # Try to get from column first
+                if hasattr(violation, 'order_wait_time'):
+                    order_wait_time = violation.order_wait_time
+                if hasattr(violation, 'service_wait_time'):
+                    service_wait_time = violation.service_wait_time
+                
+                # Fallback to alert_data if columns don't exist
+                if (order_wait_time is None or service_wait_time is None) and alert_data:
+                    if order_wait_time is None:
+                        order_wait_time = alert_data.get('order_wait_time')
+                    if service_wait_time is None:
+                        service_wait_time = alert_data.get('service_wait_time')
+                
                 result.append({
                     'id': violation.id,
                     'channel_id': violation.channel_id,
                     'table_id': violation.table_id,
                     'waiting_time': violation.waiting_time,
-                    'order_wait_time': violation.order_wait_time,
-                    'service_wait_time': violation.service_wait_time,
+                    'order_wait_time': order_wait_time,
+                    'service_wait_time': service_wait_time,
                     'snapshot_filename': violation.snapshot_filename,
                     'snapshot_path': violation.snapshot_path,
                     'alert_data': alert_data,
@@ -2908,7 +3019,7 @@ class DatabaseManager:
             return result
             
         except Exception as e:
-            logger.error(f"Error getting table service violations: {e}")
+            logger.error(f"Error getting table service violations: {e}", exc_info=True)
             return []
     
     def delete_table_service_violation(self, violation_id):

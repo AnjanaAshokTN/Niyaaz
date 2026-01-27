@@ -428,14 +428,14 @@ class SharedMultiModuleVideoProcessor:
                         # Video file ended - loop it
                         logger.info(f"Video file ended, looping: {self.video_source}")
                         self.cap.set(cv2.CAP_PROP_POS_FRAMES, 0)  # Reset to beginning
-                        ret, frame = self.cap.read()
-                        if not ret:
-                            consecutive_failures += 1
-                            if consecutive_failures >= max_failures:
-                                logger.error(f"Too many failures reading from {self.video_source}")
-                                break
-                            time.sleep(0.1)
-                            continue
+                    ret, frame = self.cap.read()
+                    if not ret:
+                        consecutive_failures += 1
+                        if consecutive_failures >= max_failures:
+                            logger.error(f"Too many failures reading from {self.video_source}")
+                            break
+                        time.sleep(0.1)
+                        continue
                         consecutive_failures = 0  # Reset on successful loop
                 
                 if not safe_array_check(frame, "valid"):

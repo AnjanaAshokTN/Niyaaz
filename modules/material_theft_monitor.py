@@ -29,7 +29,7 @@ class MaterialTheftMonitor:
 
         # Settings (can be overridden via config)
         cfg = config or {}
-        self.alert_cooldown = cfg.get("alert_cooldown", 5.0)  # Alert cooldown in seconds (default: 5s like Material_theft.py)
+        self.alert_cooldown = cfg.get("alert_cooldown", 60.0)  # Alert cooldown in seconds (default: 60s)
         self.person_proximity_threshold = cfg.get("person_proximity_threshold", 50)  # pixels from ROI border
         self.detect_persons = cfg.get("detect_persons", True)  # Enable person detection
         self.confidence_threshold = cfg.get("confidence_threshold", 0.25)  # YOLO confidence threshold
@@ -262,9 +262,9 @@ class MaterialTheftMonitor:
                 alert_triggered = True
                 self.last_alert_time = now_ts
                 if has_person_nearby:
-                    logger.warning(f"[{self.channel_id}] 🚨 ALERT: {self.target_class} detected on weighing machine (person nearby)!")
+                    logger.warning(f"[{self.channel_id}] 🚨 ALERT: Object detected on weighing machine (person nearby)!")
                 else:
-                    logger.warning(f"[{self.channel_id}] 🚨 ALERT: {self.target_class} detected on weighing machine (no person nearby)!")
+                    logger.warning(f"[{self.channel_id}] 🚨 ALERT: Object detected on weighing machine (no person nearby)!")
                 self._trigger_alert(frame.copy(), current_time, len(detected_boxes), alert_type="object_placed")
             else:
                 logger.debug(f"[{self.channel_id}] Alert condition met but in cooldown: "
@@ -449,7 +449,7 @@ class MaterialTheftMonitor:
                 }
                 logger.info(f"[{self.channel_id}] ✅ Setting person alert message: {alert_message}")
             else:  # object_placed
-                alert_message = f"📦 {self.target_class} detected on weighing machine"
+                alert_message = f"📦 Object detected on weighing machine"
                 alert_data = {
                     "channel_id": self.channel_id,
                     "detection_count": detection_count,

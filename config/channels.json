@@ -3,7 +3,7 @@
     {
       "channel_id": "camera_1",
       "channel_name": "Take Away Counter",
-      "rtsp_url": "rtsp://132.154.208.136:554/user=admin&password=NIVPL@5566&channel=1&stream=0.sdp?",
+      "rtsp_url": "rtsp://admin:admin@132.154.208.136:555/cam/realmonitor?channel=1&subtype=1",
       "video_file": "",
       "enabled": true,
       "modules": [
@@ -152,7 +152,7 @@
     {
       "channel_id": "camera_2",
       "channel_name": "Deluxe Counter",
-      "rtsp_url": "rtsp://132.154.208.136:554/user=admin&password=NIVPL@5566&channel=2&stream=0.sdp?",
+      "rtsp_url": "rtsp://admin:admin@132.154.208.136:556/cam/realmonitor?channel=1&subtype=1",
       "video_file": "",
       "enabled": true,
       "modules": [
@@ -311,7 +311,7 @@
     {
       "channel_id": "camera_3",
       "channel_name": "AC3",
-      "rtsp_url": "rtsp://132.154.208.136:554/user=admin&password=NIVPL@5566&channel=3&stream=0.sdp?",
+      "rtsp_url": "rtsp://admin:admin@132.154.208.136:557/cam/realmonitor?channel=1&subtype=1",
       "video_file": "",
       "enabled": true,
       "modules": [
@@ -398,7 +398,7 @@
     {
       "channel_id": "camera_4",
       "channel_name": "AC Entrance",
-      "rtsp_url": "rtsp://132.154.208.136:554/user=admin&password=NIVPL@5566&channel=4&stream=0.sdp?",
+      "rtsp_url": "rtsp://admin:admin@132.154.208.136:558/cam/realmonitor?channel=1&subtype=1",
       "enabled": true,
       "modules": [
         {
@@ -520,7 +520,7 @@
     {
       "channel_id": "camera_5",
       "channel_name": "General 1",
-      "rtsp_url": "rtsp://132.154.208.136:554/user=admin&password=NIVPL@5566&channel=5&stream=0.sdp?",
+      "rtsp_url": "rtsp://admin:admin@132.154.208.136:559/cam/realmonitor?channel=1&subtype=1",
       "enabled": true,
       "modules": [
         {
@@ -614,7 +614,7 @@
     {
       "channel_id": "camera_6",
       "channel_name": "General 3",
-      "rtsp_url": "rtsp://132.154.208.136:554/user=admin&password=NIVPL@5566&channel=6&stream=0.sdp?",
+      "rtsp_url": "rtsp://admin:admin@132.154.208.136:561/cam/realmonitor?channel=1&subtype=1",
       "enabled": true,
       "modules": [
         {
@@ -700,7 +700,7 @@
     {
       "channel_id": "camera_7",
       "channel_name": "Deluxe 1",
-      "rtsp_url": "rtsp://132.154.208.136:554/user=admin&password=NIVPL@5566&channel=7&stream=0.sdp?",
+      "rtsp_url": "rtsp://admin:admin@132.154.208.136:562/cam/realmonitor?channel=1&subtype=1",
       "enabled": true,
       "modules": [
         {
@@ -790,7 +790,7 @@
     {
       "channel_id": "camera_8",
       "channel_name": "Deluxe 2",
-      "rtsp_url": "rtsp://132.154.208.136:554/user=admin&password=NIVPL@5566&channel=8&stream=0.sdp?",
+      "rtsp_url": "rtsp://admin:admin@132.154.208.136:563/cam/realmonitor?channel=1&subtype=1",
       "enabled": true,
       "modules": [
         {
@@ -892,7 +892,7 @@
     {
       "channel_id": "camera_9",
       "channel_name": "Kitchen",
-      "rtsp_url": "rtsp://132.154.208.136:554/user=admin&password=NIVPL@5566&channel=9&stream=0.sdp?",
+      "rtsp_url": "rtsp://admin:admin@132.154.208.136:564/cam/realmonitor?channel=1&subtype=1",
       "video_file": "",
       "enabled": true,
       "modules": [
@@ -954,7 +954,7 @@
     {
       "channel_id": "camera_10",
       "channel_name": "Kitchen 2",
-      "rtsp_url": "rtsp://132.154.208.136:554/user=admin&password=NIVPL@5566&channel=10&stream=0.sdp?",
+      "rtsp_url": "rtsp://admin:admin@132.154.208.136:565/cam/realmonitor?channel=1&subtype=1",
       "video_file": "",
       "enabled": true,
       "modules": [
@@ -1062,7 +1062,7 @@
     {
       "channel_id": "camera_12",
       "channel_name": "Kitchen 4",
-      "rtsp_url": "rtsp://132.154.208.136:554/user=admin&password=NIVPL@5566&channel=12&stream=0.sdp?",
+      "rtsp_url": "rtsp://admin:admin@132.154.208.136:567/cam/realmonitor?channel=1&subtype=1",
       "enabled": true,
       "modules": [
         {
@@ -1107,8 +1107,8 @@
     },
     {
       "channel_id": "camera_13",
-      "channel_name": "Chinese Section",
-      "rtsp_url": "rtsp://132.154.208.136:554/user=admin&password=NIVPL@5566&channel=13&stream=0.sdp?",
+      "channel_name": "Store Area",
+      "rtsp_url": "rtsp://admin:admin@132.154.208.136:568/cam/realmonitor?channel=1&subtype=1",
       "enabled": true,
       "modules": [
         {
@@ -1143,7 +1143,7 @@
     {
       "channel_id": "camera_14",
       "channel_name": "Parking Space",
-      "rtsp_url": "rtsp://132.154.208.136:554/user=admin&password=NIVPL@5566&channel=14&stream=0.sdp?",
+      "rtsp_url": "rtsp://admin:admin@132.154.208.136:569/cam/realmonitor?channel=1&subtype=1",
       "enabled": true,
       "modules": [
         {
@@ -1192,7 +1192,7 @@
     {
       "channel_id": "camera_15",
       "channel_name": "Store Entrance (Weighing Area)",
-      "rtsp_url": "rtsp://132.154.208.136:554/user=admin&password=NIVPL@5566&channel=15&stream=0.sdp?",
+      "rtsp_url": "rtsp://admin:admin@132.154.208.136:570/cam/realmonitor?channel=1&subtype=1",
       "enabled": true,
       "modules": [
         {

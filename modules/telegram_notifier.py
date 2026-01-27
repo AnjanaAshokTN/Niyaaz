@@ -370,6 +370,7 @@ class TelegramNotifier:
             "static/fall_snapshots",
             "static/cash_snapshots",
             "static/service_discipline",
+            "static/table_service",  # Alternative location for service discipline
             "static/smoking_snapshots",
             "static/phone_snapshots",
             "static/dresscode_snapshots",

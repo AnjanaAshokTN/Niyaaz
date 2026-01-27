@@ -74,6 +74,7 @@ class UnauthorizedEntryMonitor:
         self._was_recording_alert = False
         self._last_alert_message = None
         self._last_alert_data = None
+        self._last_snapshot_path = None  # Store snapshot path as fallback if GIF fails
         
         # State storage
         self.last_alert_time = 0.0
@@ -191,6 +192,85 @@ class UnauthorizedEntryMonitor:
                         gif_path = gif_info.get('gif_path', '')
                         gif_filename = os.path.basename(gif_path) if gif_path else f"unauthorized_entry_{self.channel_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.gif"
                         
+                        # Verify GIF file actually exists before saving to DB
+                        if not gif_path or not os.path.exists(gif_path):
+                            logger.warning(f"⚠️ GIF file not found at path: {gif_path}. Using snapshot fallback.")
+                            # Use snapshot as fallback
+                            if self._last_snapshot_path and os.path.exists(os.path.join("static", self._last_snapshot_path)):
+                                snapshot_full_path = os.path.join("static", self._last_snapshot_path)
+                                file_size = os.path.getsize(snapshot_full_path)
+                                gif_payload = {
+                                    'gif_filename': os.path.basename(self._last_snapshot_path),
+                                    'gif_path': self._last_snapshot_path,  # Store snapshot path in gif_path field
+                                    'frame_count': 1,  # Single frame snapshot
+                                    'duration': 0.0
+                                }
+                                if self.app:
+                                    with self.app.app_context():
+                                        self.db_manager.save_alert_gif(
+                                            self.channel_id,
+                                            'unauthorized_entry_alert',
+                                            gif_payload,
+                                            alert_message=self._last_alert_message,
+                                            alert_data=self._last_alert_data
+                                        )
+                                else:
+                                    self.db_manager.save_alert_gif(
+                                        self.channel_id,
+                                        'unauthorized_entry_alert',
+                                        gif_payload,
+                                        alert_message=self._last_alert_message,
+                                        alert_data=self._last_alert_data
+                                    )
+                                logger.info(f"✅ Unauthorized entry alert snapshot saved to database: {self._last_snapshot_path} ({file_size} bytes)")
+                            else:
+                                logger.warning(f"⚠️ No snapshot fallback available. Skipping database save.")
+                            # Clear stored alert info
+                            self._last_alert_message = None
+                            self._last_alert_data = None
+                            self._last_snapshot_path = None
+                            return
+                        
+                        # Verify file is not empty
+                        file_size = os.path.getsize(gif_path)
+                        if file_size == 0:
+                            logger.warning(f"⚠️ GIF file is empty (0 bytes): {gif_path}. Using snapshot fallback.")
+                            # Use snapshot as fallback
+                            if self._last_snapshot_path and os.path.exists(os.path.join("static", self._last_snapshot_path)):
+                                snapshot_full_path = os.path.join("static", self._last_snapshot_path)
+                                file_size = os.path.getsize(snapshot_full_path)
+                                gif_payload = {
+                                    'gif_filename': os.path.basename(self._last_snapshot_path),
+                                    'gif_path': self._last_snapshot_path,
+                                    'frame_count': 1,
+                                    'duration': 0.0
+                                }
+                                if self.app:
+                                    with self.app.app_context():
+                                        self.db_manager.save_alert_gif(
+                                            self.channel_id,
+                                            'unauthorized_entry_alert',
+                                            gif_payload,
+                                            alert_message=self._last_alert_message,
+                                            alert_data=self._last_alert_data
+                                        )
+                                else:
+                                    self.db_manager.save_alert_gif(
+                                        self.channel_id,
+                                        'unauthorized_entry_alert',
+                                        gif_payload,
+                                        alert_message=self._last_alert_message,
+                                        alert_data=self._last_alert_data
+                                    )
+                                logger.info(f"✅ Unauthorized entry alert snapshot saved to database: {self._last_snapshot_path} ({file_size} bytes)")
+                            else:
+                                logger.warning(f"⚠️ No snapshot fallback available. Skipping database save.")
+                            # Clear stored alert info
+                            self._last_alert_message = None
+                            self._last_alert_data = None
+                            self._last_snapshot_path = None
+                            return
+                        
                         gif_payload = {
                             'gif_filename': gif_filename,
                             'gif_path': gif_path,
@@ -214,12 +294,88 @@ class UnauthorizedEntryMonitor:
                                 alert_message=self._last_alert_message,
                                 alert_data=self._last_alert_data
                             )
-                        logger.info(f"Unauthorized entry alert GIF saved to database: {gif_filename}")
+                        logger.info(f"✅ Unauthorized entry alert GIF saved to database: {gif_filename} ({file_size} bytes)")
                         # Clear stored alert info
                         self._last_alert_message = None
                         self._last_alert_data = None
+                        self._last_snapshot_path = None
                     except Exception as e:
-                        logger.error(f"Failed to save unauthorized entry alert GIF to DB: {e}")
+                        logger.error(f"❌ Failed to save unauthorized entry alert GIF to DB: {e}", exc_info=True)
+                        # Try to save snapshot as fallback
+                        if self._last_snapshot_path and os.path.exists(os.path.join("static", self._last_snapshot_path)):
+                            try:
+                                snapshot_full_path = os.path.join("static", self._last_snapshot_path)
+                                file_size = os.path.getsize(snapshot_full_path)
+                                gif_payload = {
+                                    'gif_filename': os.path.basename(self._last_snapshot_path),
+                                    'gif_path': self._last_snapshot_path,
+                                    'frame_count': 1,
+                                    'duration': 0.0
+                                }
+                                if self.app:
+                                    with self.app.app_context():
+                                        self.db_manager.save_alert_gif(
+                                            self.channel_id,
+                                            'unauthorized_entry_alert',
+                                            gif_payload,
+                                            alert_message=self._last_alert_message,
+                                            alert_data=self._last_alert_data
+                                        )
+                                else:
+                                    self.db_manager.save_alert_gif(
+                                        self.channel_id,
+                                        'unauthorized_entry_alert',
+                                        gif_payload,
+                                        alert_message=self._last_alert_message,
+                                        alert_data=self._last_alert_data
+                                    )
+                                logger.info(f"✅ Saved snapshot as fallback after GIF save error: {self._last_snapshot_path}")
+                            except Exception as fallback_error:
+                                logger.error(f"❌ Failed to save snapshot fallback: {fallback_error}")
+                        # Clear stored alert info
+                        self._last_alert_message = None
+                        self._last_alert_data = None
+                        self._last_snapshot_path = None
+                elif self._last_alert_message and not gif_info:
+                    # Alert was triggered but GIF recording failed - use snapshot
+                    logger.warning(f"⚠️ Alert triggered but GIF recording failed - using snapshot fallback")
+                    if self._last_snapshot_path and self.db_manager:
+                        try:
+                            snapshot_full_path = os.path.join("static", self._last_snapshot_path)
+                            if os.path.exists(snapshot_full_path):
+                                file_size = os.path.getsize(snapshot_full_path)
+                                gif_payload = {
+                                    'gif_filename': os.path.basename(self._last_snapshot_path),
+                                    'gif_path': self._last_snapshot_path,
+                                    'frame_count': 1,
+                                    'duration': 0.0
+                                }
+                                if self.app:
+                                    with self.app.app_context():
+                                        self.db_manager.save_alert_gif(
+                                            self.channel_id,
+                                            'unauthorized_entry_alert',
+                                            gif_payload,
+                                            alert_message=self._last_alert_message,
+                                            alert_data=self._last_alert_data
+                                        )
+                                else:
+                                    self.db_manager.save_alert_gif(
+                                        self.channel_id,
+                                        'unauthorized_entry_alert',
+                                        gif_payload,
+                                        alert_message=self._last_alert_message,
+                                        alert_data=self._last_alert_data
+                                    )
+                                logger.info(f"✅ Saved snapshot as fallback for failed GIF: {self._last_snapshot_path} ({file_size} bytes)")
+                            else:
+                                logger.warning(f"⚠️ Snapshot file not found: {snapshot_full_path}")
+                        except Exception as e:
+                            logger.error(f"❌ Failed to save snapshot fallback: {e}")
+                    # Clear stored alert info
+                    self._last_alert_message = None
+                    self._last_alert_data = None
+                    self._last_snapshot_path = None
             
             # Track recording state for next frame
             self._was_recording_alert = was_recording
@@ -247,6 +403,40 @@ class UnauthorizedEntryMonitor:
             alert_message = f"⚠️ UNAUTHORIZED ENTRY: {person_count} person(s) detected"
             
             logger.warning(f"[{self.channel_id}] {alert_message}")
+            
+            # Save snapshot immediately (as fallback if GIF fails)
+            snapshot_path = None
+            try:
+                timestamp = current_time.strftime("%Y%m%d_%H%M%S")
+                snapshot_filename = f"unauthorized_entry_{self.channel_id}_{timestamp}.jpg"
+                snapshot_path = os.path.join(self.snapshot_dir, snapshot_filename)
+                
+                # Draw annotations on snapshot
+                annotated_frame = self._draw_annotations(frame.copy(), detections, True)
+                
+                # Save snapshot with robust error checking
+                success = cv2.imwrite(snapshot_path, annotated_frame)
+                if success:
+                    # Verify file was created and is not empty
+                    if os.path.exists(snapshot_path):
+                        file_size = os.path.getsize(snapshot_path)
+                        if file_size > 0:
+                            # Convert to relative path for database storage
+                            relative_path = os.path.relpath(snapshot_path, "static")
+                            self._last_snapshot_path = relative_path
+                            logger.info(f"✅ Snapshot saved: {relative_path} ({file_size} bytes)")
+                        else:
+                            logger.warning(f"⚠️ Snapshot file is empty: {snapshot_path}")
+                            self._last_snapshot_path = None
+                    else:
+                        logger.warning(f"⚠️ Snapshot file not found after save: {snapshot_path}")
+                        self._last_snapshot_path = None
+                else:
+                    logger.warning(f"⚠️ cv2.imwrite() returned False for snapshot: {snapshot_path}")
+                    self._last_snapshot_path = None
+            except Exception as e:
+                logger.error(f"❌ Failed to save snapshot: {e}")
+                self._last_snapshot_path = None
             
             # Start GIF recording
             alert_info = {
