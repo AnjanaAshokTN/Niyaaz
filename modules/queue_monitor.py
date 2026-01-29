@@ -25,6 +25,7 @@ import os
 import requests
 
 from .yolo_detector import YOLODetector
+from .gif_recorder import AlertGifRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -163,6 +164,14 @@ class QueueMonitor:
         self.cache_interval = 2  # run YOLO every 2 frames
         self.socketio_update_interval = 15
         self.db_log_interval = 600
+
+        # Initialize GIF recorder for alert snapshots
+        self.gif_recorder = AlertGifRecorder(buffer_size=90, gif_duration=3.0, fps=5)
+        
+        # Track recording state for GIF management
+        self._was_recording_alert = False
+        self._pending_alert_info = None  # Store alert_info for database saving when GIF completes
+        self._pending_violation_ids = []  # Store violation IDs to update with GIF path when complete
 
         logger.info(f"QueueMonitor initialized for channel {channel_id}")
         logger.info(
@@ -943,32 +952,13 @@ class QueueMonitor:
         
         for violation_type, violation_message in violations:
             try:
-                # Save snapshot with specific violation message and counts from alert time
-                snapshot_path = self._save_violation_snapshot(
-                    frame, 
-                    violation_type, 
-                    violation_message,
-                    queue_count=alert_queue_count,
-                    counter_count=alert_counter_count
-                )
-                
-                # Verify snapshot was saved successfully
-                if not snapshot_path:
-                    logger.error(f"[{self.channel_id}] ❌ Failed to save snapshot for violation: {violation_message}")
-                    logger.error(f"[{self.channel_id}] Snapshot path is None - snapshot saving failed!")
-                else:
-                    import os
-                    # Normalize path for checking (handle both forward and backslashes)
-                    check_path = snapshot_path.replace('\\', '/')
-                    if not os.path.exists(snapshot_path):
-                        logger.error(f"[{self.channel_id}] ❌ Snapshot path does not exist: {snapshot_path}")
-                        logger.error(f"[{self.channel_id}] Attempted to check: {os.path.abspath(snapshot_path)}")
-                        snapshot_path = None  # Set to None so database doesn't store invalid path
-                    else:
-                        file_size = os.path.getsize(snapshot_path)
-                        logger.info(f"[{self.channel_id}] ✅ Snapshot verified: {snapshot_path} ({file_size} bytes)")
+                # Note: GIF recording is handled separately in process_frame
+                # We no longer save static snapshots - GIF will be saved when recording completes
+                # snapshot_path is set to None since we're using GIFs now
+                snapshot_path = None
                 
                 # Save to database (with proper app context handling)
+                # The GIF will be saved separately via save_alert_gif when recording completes
                 violation_id = None
                 if self.app:
                     from flask import has_app_context
@@ -980,7 +970,7 @@ class QueueMonitor:
                             queue_count=self.queue_count,
                             counter_count=self.counter_count,
                             wait_time_seconds=alert_info.get("max_wait_seconds", 0.0),
-                            snapshot_path=snapshot_path,
+                            snapshot_path=snapshot_path,  # None - using GIFs now
                             alert_data=alert_info
                         )
                     else:
@@ -992,7 +982,7 @@ class QueueMonitor:
                                 queue_count=self.queue_count,
                                 counter_count=self.counter_count,
                                 wait_time_seconds=alert_info.get("max_wait_seconds", 0.0),
-                                snapshot_path=snapshot_path,
+                                snapshot_path=snapshot_path,  # None - using GIFs now
                                 alert_data=alert_info
                             )
                 else:
@@ -1003,12 +993,15 @@ class QueueMonitor:
                         queue_count=self.queue_count,
                         counter_count=self.counter_count,
                         wait_time_seconds=alert_info.get("max_wait_seconds", 0.0),
-                        snapshot_path=snapshot_path,
+                        snapshot_path=snapshot_path,  # None - using GIFs now
                         alert_data=alert_info
                     )
                 
                 if violation_id:
                     logger.info(f"[{self.channel_id}] ✅ Queue violation saved to database: ID {violation_id}, type: {violation_type}, message: {violation_message}")
+                    logger.info(f"[{self.channel_id}] 📹 GIF recording in progress - will be saved when complete")
+                    # Store violation ID to update with GIF path later
+                    self._pending_violation_ids.append(violation_id)
                 else:
                     logger.error(f"[{self.channel_id}] ❌ Failed to save queue violation (returned None)")
             except Exception as e:
@@ -1161,6 +1154,9 @@ class QueueMonitor:
 
         original_frame = frame.copy()
         h, w = frame.shape[:2]
+        
+        # Add frame to GIF recorder buffer (always running)
+        self.gif_recorder.add_frame(frame)
 
         # Run YOLO every N frames, reuse detections in between
         if (
@@ -1383,15 +1379,113 @@ class QueueMonitor:
                 sustained = (datetime.now() - self.alert_condition_start_time).total_seconds()
                 logger.info(f"  Condition sustained: {sustained:.2f}s / {self.alert_condition_sustained_duration}s")
         
+        # Handle GIF recording state
+        was_recording = self.gif_recorder.is_recording_alert
+        
+        if was_recording:
+            # Add frame during alert recording
+            self.gif_recorder.add_alert_frame(original_frame)
+            # stop_alert_recording() is called automatically by add_alert_frame when duration is reached
+        
+        # Check if recording just finished (was recording, now stopped)
+        if self._was_recording_alert and not self.gif_recorder.is_recording_alert:
+            # Recording just finished - get GIF info and save to DB
+            gif_info = self.gif_recorder.get_last_gif_info()
+            if gif_info and self.db_manager and self._pending_alert_info:
+                try:
+                    # Extract filename from path
+                    gif_path = gif_info.get('gif_path', '')
+                    gif_filename = os.path.basename(gif_path) if gif_path else f"queue_alert_{self.channel_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.gif"
+                    
+                    # Convert absolute path to relative path for database (e.g., static/alerts/alert_xxx.gif)
+                    if gif_path:
+                        # Normalize path separators
+                        normalized_path = gif_path.replace('\\', '/')
+                        # Extract relative path (static/alerts/...)
+                        if 'static/' in normalized_path:
+                            snapshot_path = normalized_path.split('static/')[1]
+                            snapshot_path = f"static/{snapshot_path}"
+                        else:
+                            snapshot_path = gif_path
+                    else:
+                        snapshot_path = None
+                    
+                    gif_payload = {
+                        'gif_filename': gif_filename,
+                        'gif_path': gif_path,
+                        'frame_count': gif_info.get('frame_count', 0),
+                        'duration': gif_info.get('duration', 0.0)
+                    }
+                    
+                    alert_info = self._pending_alert_info
+                    alert_message = alert_info.get('message', 'Queue violation detected')
+                    
+                    # Save GIF to alert_gifs table
+                    if self.app:
+                        with self.app.app_context():
+                            self.db_manager.save_alert_gif(
+                                self.channel_id,
+                                'queue_alert',
+                                gif_payload,
+                                alert_message=alert_message,
+                                alert_data=alert_info
+                            )
+                            
+                            # Update queue_violations with GIF path for dashboard compatibility
+                            if snapshot_path and self._pending_violation_ids:
+                                for violation_id in self._pending_violation_ids:
+                                    try:
+                                        # Update the violation's snapshot_path using db_manager
+                                        violation = self.db_manager.QueueViolation.query.get(violation_id)
+                                        if violation:
+                                            violation.snapshot_path = snapshot_path
+                                            # Also update snapshot_filename for consistency
+                                            if gif_filename:
+                                                violation.snapshot_filename = gif_filename
+                                            # Update file_size if GIF exists
+                                            if gif_path and os.path.exists(gif_path):
+                                                violation.file_size = os.path.getsize(gif_path)
+                                            self.db_manager.db.session.commit()
+                                            logger.info(f"[{self.channel_id}] ✅ Updated violation {violation_id} with GIF path: {snapshot_path}")
+                                        else:
+                                            logger.warning(f"[{self.channel_id}] ⚠️ Violation {violation_id} not found for update")
+                                    except Exception as update_error:
+                                        logger.warning(f"[{self.channel_id}] ⚠️ Could not update violation {violation_id} with GIF path: {update_error}", exc_info=True)
+                    else:
+                        self.db_manager.save_alert_gif(
+                            self.channel_id,
+                            'queue_alert',
+                            gif_payload,
+                            alert_message=alert_message,
+                            alert_data=alert_info
+                        )
+                    
+                    logger.info(f"[{self.channel_id}] ✅ Queue alert GIF saved to database: {gif_filename}")
+                    # Clear stored alert info and violation IDs
+                    self._pending_alert_info = None
+                    self._pending_violation_ids = []
+                except Exception as e:
+                    logger.error(f"[{self.channel_id}] ❌ Failed to save queue alert GIF to DB: {e}", exc_info=True)
+        
+        # Track recording state for next frame
+        self._was_recording_alert = was_recording
+        
         # Check for alerts and violations
         alert_info = self._check_alert_conditions()
         if alert_info:
             logger.warning(f"[{self.channel_id}] 🚨 Queue alert triggered: {alert_info['message']}")
             logger.info(f"[{self.channel_id}] Alert details: queue={self.queue_count}, counter={self.counter_count}, wait={alert_info.get('max_wait_seconds', 0):.1f}s")
             
-            # Save violation snapshots and database records
-            # Use original_frame which has ROIs and counts, but _save_violation_snapshot will
-            # clear any existing alert text and add the specific violation message
+            # Start GIF recording for this alert
+            self.gif_recorder.start_alert_recording(alert_info)
+            # Store alert_info for database saving when GIF completes
+            self._pending_alert_info = alert_info
+            # Clear any previous violation IDs
+            self._pending_violation_ids = []
+            
+            # Still save violations to database (but without static snapshot)
+            # The GIF will be saved separately when recording completes
+            # Store violation IDs so we can update them with GIF path later
             self._save_violations(original_frame, alert_info)
             
             # Socket.IO alert
