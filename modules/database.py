@@ -2795,7 +2795,10 @@ class DatabaseManager:
                         resolved_snapshot_path = None
                     
                     # Only send Telegram notification if snapshot exists and is valid
-                    if resolved_snapshot_path and os.path.exists(resolved_snapshot_path):
+                    # For GIFs, the path might be a placeholder initially - check if it's a placeholder
+                    is_placeholder = snapshot_path and ('placeholder' in snapshot_path.lower() or snapshot_path.endswith('.gif') and not os.path.exists(os.path.join("static", snapshot_path)))
+                    
+                    if resolved_snapshot_path and os.path.exists(resolved_snapshot_path) and not is_placeholder:
                         file_size_check = os.path.getsize(resolved_snapshot_path)
                         if file_size_check > 0:
                             _send_telegram_alert(
@@ -2807,6 +2810,8 @@ class DatabaseManager:
                             )
                         else:
                             logger.warning(f"⚠️ Snapshot file is empty (0 bytes) for table {table_id} - skipping Telegram notification")
+                    elif is_placeholder:
+                        logger.info(f"ℹ️ Snapshot path is a placeholder for table {table_id} - Telegram will be sent when GIF completes")
                     else:
                         logger.warning(f"⚠️ No valid snapshot available for table {table_id} - skipping Telegram notification (path: {snapshot_path})")
             else:

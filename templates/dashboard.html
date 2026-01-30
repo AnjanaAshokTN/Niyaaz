@@ -4981,16 +4981,84 @@
     // Load cash detection snapshots
     async function loadCashSnapshots() {
         try {
-            // Load all cash detection snapshots from all channels
-            const url = '/api/get_cash_snapshots?limit=50';
+            // Load cash detection snapshots from both cash_snapshots and alert_gifs tables
+            // First, try to load from cash_snapshots
+            const cashResponse = await fetch('/api/get_cash_snapshots?limit=50');
+            const cashResult = await cashResponse.json();
             
-            const response = await fetch(url);
-            const result = await response.json();
+            // Also load from alert_gifs table for cash_detection_alert type
+            const gifResponse = await fetch('/api/get_alert_gifs?alert_type=cash_detection_alert&limit=50');
+            const gifResult = await gifResponse.json();
             
-            if (result.success) {
-                displayCashSnapshots(result.snapshots);
+            // Merge results, prioritizing cash_snapshots but including alert_gifs that might not be in cash_snapshots
+            let allSnapshots = [];
+            
+            if (cashResult.success && cashResult.snapshots) {
+                allSnapshots = cashResult.snapshots;
+            }
+            
+            // Update cash_snapshots entries with actual GIF paths from alert_gifs, and add missing ones
+            if (gifResult.success && gifResult.alert_gifs) {
+                // Create a map of GIFs by channel_id and timestamp for quick lookup
+                const gifMap = new Map();
+                gifResult.alert_gifs.forEach(gif => {
+                    const key = `${gif.channel_id}_${gif.timestamp || gif.created_at}`;
+                    gifMap.set(key, gif);
+                });
+                
+                // Update existing cash_snapshots entries with actual GIF paths if they have placeholder paths
+                allSnapshots.forEach(snapshot => {
+                    // Check if snapshot_path is a placeholder (contains "cash_snapshots" but file doesn't exist)
+                    if (snapshot.snapshot_path && snapshot.snapshot_path.includes('cash_snapshots')) {
+                        // Try to find matching GIF from alert_gifs by timestamp/channel
+                        const snapshotTime = new Date(snapshot.created_at);
+                        for (const [key, gif] of gifMap.entries()) {
+                            if (key.startsWith(snapshot.channel_id + '_')) {
+                                const gifTime = new Date(gif.timestamp || gif.created_at);
+                                // If timestamps are within 5 seconds, use this GIF
+                                if (Math.abs(snapshotTime - gifTime) < 5000) {
+                                    snapshot.snapshot_path = gif.gif_path || gif.gif_filename || snapshot.snapshot_path;
+                                    snapshot.snapshot_filename = gif.gif_filename || snapshot.snapshot_filename;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                });
+                
+                // Add GIFs from alert_gifs that don't have corresponding cash_snapshots entries
+                gifResult.alert_gifs.forEach(gif => {
+                    // Check if this GIF is already in cash_snapshots by timestamp/channel
+                    const exists = allSnapshots.some(s => {
+                        const sTime = new Date(s.created_at);
+                        const gTime = new Date(gif.timestamp || gif.created_at);
+                        return s.channel_id === gif.channel_id && 
+                               Math.abs(sTime - gTime) < 5000;
+                    });
+                    if (!exists) {
+                        // Convert alert_gif format to cash_snapshot format for display
+                        allSnapshots.push({
+                            id: gif.id,
+                            channel_id: gif.channel_id,
+                            snapshot_filename: gif.gif_filename || '',
+                            snapshot_path: gif.gif_path || '',
+                            alert_message: gif.alert_message || 'Cashdraw-open detected',
+                            alert_data: typeof gif.alert_data === 'string' ? JSON.parse(gif.alert_data) : (gif.alert_data || {}),
+                            detection_count: (typeof gif.alert_data === 'string' ? JSON.parse(gif.alert_data) : (gif.alert_data || {})).detection_count || 1,
+                            file_size: gif.file_size || 0,
+                            created_at: gif.timestamp || gif.created_at
+                        });
+                    }
+                });
+            }
+            
+            // Sort by created_at descending
+            allSnapshots.sort((a, b) => new Date(b.created_at) - new Date(a.created_at));
+            
+            if (allSnapshots.length > 0) {
+                displayCashSnapshots(allSnapshots);
             } else {
-                console.error('Failed to load cash snapshots:', result.error);
+                displayCashSnapshots([]);
             }
         } catch (error) {
             console.error('Error loading cash snapshots:', error);
@@ -5012,35 +5080,74 @@
             return;
         }
         
-        grid.innerHTML = snapshots.map(snapshot => `
-            <div class="alert-gif-card">
-                <div class="gif-preview">
-                    <img src="/static/cash_snapshots/${snapshot.snapshot_filename}" alt="Cash Detection" loading="lazy" style="width: 100%; border-radius: 4px; cursor: pointer;" onclick="openLightboxFromImage(this)">
-                </div>
-                <div class="gif-info">
-                    <div class="gif-channel">
-                        <strong>Channel:</strong> ${snapshot.channel_id}
+        grid.innerHTML = snapshots.map(snapshot => {
+            // Resolve snapshot URL - prefer snapshot_path (GIF) over snapshot_filename (legacy JPG)
+            let snapshotUrl = null;
+            let snapshotPath = null;
+            
+            if (snapshot.snapshot_path) {
+                // Normalize path separators (Windows backslashes to forward slashes)
+                let normalizedPath = snapshot.snapshot_path.replace(/\\/g, '/');
+                
+                if (normalizedPath.startsWith('/') || normalizedPath.startsWith('http')) {
+                    snapshotUrl = normalizedPath;
+                    snapshotPath = normalizedPath;
+                } else {
+                    // Relative path - prepend /static/ if it doesn't already include it
+                    if (normalizedPath.includes('static/')) {
+                        snapshotUrl = `/${normalizedPath}`;
+                        snapshotPath = normalizedPath;
+                    } else {
+                        snapshotUrl = `/static/${normalizedPath}`;
+                        snapshotPath = `static/${normalizedPath}`;
+                    }
+                }
+            } else if (snapshot.snapshot_filename) {
+                // Fallback to old snapshot_filename for backward compatibility
+                snapshotUrl = `/static/cash_snapshots/${snapshot.snapshot_filename}`;
+                snapshotPath = snapshot.snapshot_filename;
+            }
+            
+            return `
+                <div class="alert-gif-card">
+                    <div class="gif-preview">
+                        ${snapshotUrl ? `<img src="${snapshotUrl}" alt="Cash Detection" loading="lazy" style="width: 100%; border-radius: 4px; cursor: pointer;" onerror="this.parentElement.innerHTML='<div style=\\'padding: 40px; text-align: center; color: var(--text-secondary);\\'>No snapshot available</div>'">` : '<div style="padding: 40px; text-align: center; color: var(--text-secondary);">No snapshot available</div>'}
                     </div>
-                    <div class="gif-time">
-                        <strong>Time:</strong> ${new Date(snapshot.created_at).toLocaleString()}
+                    <div class="gif-info">
+                        <div class="gif-channel">
+                            <strong>Channel:</strong> ${snapshot.channel_id}
+                        </div>
+                        <div class="gif-time">
+                            <strong>Time:</strong> ${new Date(snapshot.created_at).toLocaleString()}
+                        </div>
+                        <div class="gif-message">
+                            <strong>Alert:</strong> ${snapshot.alert_message}
+                        </div>
+                        ${snapshot.detection_count ? `<div style="font-size: 0.85em; color: var(--text-secondary); margin-top: 5px;">Detections: ${snapshot.detection_count}</div>` : ''}
                     </div>
-                    <div class="gif-message">
-                        <strong>Alert:</strong> ${snapshot.alert_message}
+                    <div class="gif-actions">
+                        ${snapshotPath ? `<button class="btn btn-sm" onclick="downloadCashSnapshot('${snapshotPath}')">📥 Download</button>` : ''}
+                        <button class="btn btn-sm btn-danger" onclick="deleteCashSnapshot(${snapshot.id})">🗑️ Delete</button>
                     </div>
                 </div>
-                <div class="gif-actions">
-                    <button class="btn btn-sm" onclick="downloadCashSnapshot('${snapshot.snapshot_filename}')">📥 Download</button>
-                    <button class="btn btn-sm btn-danger" onclick="deleteCashSnapshot(${snapshot.id})">🗑️ Delete</button>
-                </div>
-            </div>
-        `).join('');
+            `;
+        }).join('');
     }
     
     // Download cash snapshot
-    function downloadCashSnapshot(filename) {
+    function downloadCashSnapshot(snapshotPath) {
         const link = document.createElement('a');
-        link.href = `/static/cash_snapshots/${filename}`;
-        link.download = filename;
+        // Handle both relative paths (static/alerts/...) and filenames
+        if (snapshotPath.startsWith('static/')) {
+            link.href = `/${snapshotPath}`;
+            // Extract filename from path
+            const pathParts = snapshotPath.split('/');
+            link.download = pathParts[pathParts.length - 1];
+        } else {
+            // Legacy: just filename, assume cash_snapshots directory
+            link.href = `/static/cash_snapshots/${snapshotPath}`;
+            link.download = snapshotPath;
+        }
         link.click();
     }
     
@@ -5577,16 +5684,35 @@
         }
         
         grid.innerHTML = alerts.map(alert => {
-            const gifPath = alert.gif_path || alert.snapshot_path || '';
+            // Resolve GIF path - handle both relative and absolute paths
+            let gifPath = alert.gif_path || alert.snapshot_path || '';
+            let snapshotUrl = null;
+            
+            if (gifPath) {
+                // Normalize path separators (Windows backslashes to forward slashes)
+                let normalizedPath = gifPath.replace(/\\/g, '/');
+                
+                if (normalizedPath.startsWith('/') || normalizedPath.startsWith('http')) {
+                    snapshotUrl = normalizedPath;
+                } else {
+                    // Relative path - prepend /static/ if it doesn't already include it
+                    if (normalizedPath.includes('static/')) {
+                        snapshotUrl = `/${normalizedPath}`;
+                    } else {
+                        snapshotUrl = `/static/${normalizedPath}`;
+                    }
+                }
+            }
+            
             const timestamp = new Date(alert.timestamp || alert.created_at).toLocaleString();
             const alertData = typeof alert.alert_data === 'string' ? JSON.parse(alert.alert_data) : (alert.alert_data || {});
             const stillFrames = alertData.still_frames || alertData.detection_count || 0;
             
             return `
                 <div class="alert-gif-card">
-                    ${gifPath ? `
+                    ${snapshotUrl ? `
                         <div class="gif-preview">
-                            <img src="/${gifPath}" alt="Material Theft Alert" loading="lazy" style="width: 100%; border-radius: 4px; cursor: pointer;" onclick="openLightboxFromImage(this)">
+                            <img src="${snapshotUrl}" alt="Material Theft Alert" loading="lazy" style="width: 100%; border-radius: 4px; cursor: pointer;" onerror="this.parentElement.innerHTML='<div style=\\'padding: 40px; text-align: center; color: var(--text-secondary);\\'>No snapshot available</div>'">
                         </div>
                     ` : `
                         <div class="gif-preview" style="background: #1f2937; display: flex; align-items: center; justify-content: center; min-height: 150px;">
@@ -5600,8 +5726,8 @@
                         ${alert.alert_message ? `<div style="color: var(--text-secondary); font-size: 0.9em; margin-top: 5px;">${alert.alert_message}</div>` : ''}
                     </div>
                     <div class="gif-actions">
-                        ${gifPath ? `
-                            <button class="btn btn-sm btn-primary" onclick="downloadMaterialTheftGif('${gifPath}')">📥 Download</button>
+                        ${snapshotUrl ? `
+                            <button class="btn btn-sm btn-primary" onclick="downloadMaterialTheftGif('${gifPath || snapshotUrl}')">📥 Download</button>
                         ` : ''}
                         <button class="btn btn-sm btn-danger" onclick="deleteMaterialTheftAlert(${alert.id})">🗑️ Delete</button>
                     </div>

@@ -255,10 +255,13 @@ class GPUDecoderManager:
             except Exception as e:
                 logger.warning(f"OpenCV CUDA decoder failed for {rtsp_url}: {e}")
         
-        # Fallback to CPU decoder (THIRD option) - Try OpenCV with short timeout
+        # Fallback to CPU decoder (THIRD option) - Try OpenCV with timeout
+        # Some cameras (especially HEVC / high-latency) can take longer to
+        # return the first decodable frame, so we allow a generous timeout.
         logger.info(f"Using CPU decoder for: {rtsp_url}")
         
-        # Use threading with SHORT timeout to fail fast for fallback
+        # Use threading with timeout to avoid blocking forever but still give
+        # slower cameras (like your camera_13) a chance to respond.
         try:
             result_queue = Queue()
             exception_queue = Queue()
@@ -279,13 +282,13 @@ class GPUDecoderManager:
                 except Exception as e:
                     exception_queue.put(e)
             
-            # Use SHORT timeout (5 seconds) to fail fast and allow fallback
+            # Use a 15 second timeout to handle slower RTSP streams
             thread = threading.Thread(target=create_capture, daemon=True)
             thread.start()
-            thread.join(timeout=5)  # 5 second timeout for fast fallback
+            thread.join(timeout=15)  # 15 second timeout to allow first keyframe
             
             if thread.is_alive():
-                logger.warning(f"OpenCV CPU decoder timeout after 5s for: {rtsp_url} - will fail for fallback")
+                logger.warning(f"OpenCV CPU decoder timeout after 15s for: {rtsp_url} - will fail for fallback")
                 return None, False, "None"  # Return None immediately for fast fallback
             else:
                 if not exception_queue.empty():
@@ -632,7 +635,14 @@ class RTSPConnection:
             )
             
             if self.cap is None:
-                logger.error(f"Cannot create video reader for: {self.rtsp_url}")
+                logger.error(f"❌ Cannot create video reader for: {self.rtsp_url}")
+                logger.error(f"   All decoder attempts (GPU, CPU, FFmpeg) failed.")
+                logger.error(f"   Possible causes:")
+                logger.error(f"   - Camera is offline or unreachable")
+                logger.error(f"   - RTSP URL is incorrect")
+                logger.error(f"   - Network connectivity issues")
+                logger.error(f"   - Camera authentication failed")
+                logger.error(f"   - Camera port is blocked by firewall")
                 
                 # Send simplified aggregated alert immediately
                 if self.pool:

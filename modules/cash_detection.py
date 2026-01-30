@@ -16,6 +16,7 @@ from datetime import datetime
 from ultralytics import YOLO
 from pathlib import Path
 from .model_manager import get_shared_model, release_shared_model
+from .gif_recorder import AlertGifRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -85,6 +86,15 @@ class CashDetection:
         self.frame_count = 0
         self.last_update_time = time.time()
         
+        # Initialize GIF recorder for alert snapshots
+        self.gif_recorder = AlertGifRecorder(buffer_size=90, gif_duration=3.0, fps=5)
+        
+        # Track recording state for GIF management
+        self._was_recording_alert = False
+        self._pending_alert_info = None  # Store alert info for database saving when GIF completes
+        self._pending_snapshot_id = None  # Store snapshot ID to update with GIF path when complete
+        self._pending_alert_timestamp = None  # Track when alert was triggered to prevent premature clearing
+        
         logger.info(f"CashDetection initialized for channel {channel_id}")
     
     def __del__(self):
@@ -111,6 +121,9 @@ class CashDetection:
         
         self.frame_count += 1
         t_now = time.time()
+        
+        # Add frame to GIF recorder buffer (always running)
+        self.gif_recorder.add_frame(frame)
         
         # Clear GPU cache periodically to prevent memory fragmentation
         if torch.cuda.is_available() and self.frame_count % 100 == 0:
@@ -201,6 +214,175 @@ class CashDetection:
             self.first_detection_time = None
             self.consecutive_detection = False
         
+        # Handle GIF recording state (same pattern as queue_monitor)
+        was_recording = self.gif_recorder.is_recording_alert
+        
+        if was_recording:
+            # Add frame during alert recording
+            self.gif_recorder.add_alert_frame(frame)
+            # stop_alert_recording() is called automatically by add_alert_frame when duration is reached
+            # Log periodically to track recording progress (every 10 frames since processing is slow)
+            if self.frame_count % 10 == 0:  # Every 10 frames to catch progress even with slow processing
+                elapsed = (datetime.now() - self.gif_recorder.alert_start_time).total_seconds() if self.gif_recorder.alert_start_time else 0
+                frame_count = len(self.gif_recorder.alert_frames) if hasattr(self.gif_recorder, 'alert_frames') else 0
+                logger.info(f"[{self.channel_id}] 📹 GIF recording in progress: {elapsed:.1f}s / {self.gif_recorder.gif_duration:.1f}s, alert_frames={frame_count}, is_recording={self.gif_recorder.is_recording_alert}")
+        
+        # Check current state after potentially adding frame
+        is_recording_now = self.gif_recorder.is_recording_alert
+        
+        # Check if recording just finished (was recording, now stopped)
+        # This detects the transition from recording to stopped
+        # Pattern matches queue_monitor: check if we WERE recording (previous frame) and NOW we're not (after adding frame)
+        if self._was_recording_alert and not is_recording_now:
+            # Recording just finished - get GIF info and save to DB
+            logger.info(f"[{self.channel_id}] 🎬 GIF recording completed! Previous state: {self._was_recording_alert}, Current state: {self.gif_recorder.is_recording_alert}")
+            logger.info(f"[{self.channel_id}] 📊 GIF recorder state check: was_recording={was_recording}, is_recording_now={self.gif_recorder.is_recording_alert}, _was_recording_alert={self._was_recording_alert}")
+            
+            # Get GIF info - this should have been set by stop_alert_recording()
+            gif_info = self.gif_recorder.get_last_gif_info()
+            
+            # If get_last_gif_info() returns None, try to get it directly from the recorder
+            if not gif_info and hasattr(self.gif_recorder, 'last_gif_info'):
+                gif_info = self.gif_recorder.last_gif_info
+                logger.info(f"[{self.channel_id}] ℹ️ Retrieved GIF info from last_gif_info attribute: {gif_info is not None}")
+            
+            # Log diagnostic info with more details
+            if not gif_info:
+                logger.warning(f"[{self.channel_id}] ⚠️ GIF recording completed but get_last_gif_info() returned None")
+            else:
+                logger.info(f"[{self.channel_id}] ✅ Retrieved GIF info: path={gif_info.get('gif_path', 'N/A')}, frames={gif_info.get('frame_count', 0)}")
+            
+            if not self.db_manager:
+                logger.warning(f"[{self.channel_id}] ⚠️ GIF recording completed but db_manager is None")
+            
+            if not self._pending_alert_info:
+                logger.error(f"[{self.channel_id}] ❌ GIF recording completed but _pending_alert_info is None! This means alert info was lost. GIF path: {gif_info.get('gif_path', 'N/A') if gif_info else 'N/A'}")
+                # Try to save with minimal info if we have GIF but no alert info
+                if gif_info and self.db_manager:
+                    logger.warning(f"[{self.channel_id}] ⚠️ Attempting to save GIF with minimal info since _pending_alert_info is missing")
+                    try:
+                        gif_path = gif_info.get('gif_path', '')
+                        gif_filename = os.path.basename(gif_path) if gif_path else f"cash_alert_{self.channel_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.gif"
+                        gif_payload = {
+                            'gif_filename': gif_filename,
+                            'gif_path': gif_path,
+                            'frame_count': gif_info.get('frame_count', 0),
+                            'duration': gif_info.get('duration', 0.0)
+                        }
+                        fallback_message = f"Cashdraw-open detected on {self.channel_id}"
+                        if self.app:
+                            with self.app.app_context():
+                                self.db_manager.save_alert_gif(
+                                    self.channel_id,
+                                    'cash_detection_alert',
+                                    gif_payload,
+                                    alert_message=fallback_message,
+                                    alert_data={'channel_id': self.channel_id, 'recovered': True}
+                                )
+                        else:
+                            self.db_manager.save_alert_gif(
+                                self.channel_id,
+                                'cash_detection_alert',
+                                gif_payload,
+                                alert_message=fallback_message,
+                                alert_data={'channel_id': self.channel_id, 'recovered': True}
+                            )
+                        logger.info(f"[{self.channel_id}] ✅ Recovered and saved GIF with minimal info: {gif_filename}")
+                    except Exception as e:
+                        logger.error(f"[{self.channel_id}] ❌ Failed to save recovered GIF: {e}", exc_info=True)
+            else:
+                logger.info(f"[{self.channel_id}] ✅ _pending_alert_info available: message='{self._pending_alert_info.get('message', 'N/A')}'")
+            
+            if not self._pending_snapshot_id:
+                logger.info(f"[{self.channel_id}] ℹ️ GIF recording completed but _pending_snapshot_id is None - will save to alert_gifs only")
+            
+            # Save GIF if we have the required info
+            if gif_info and self.db_manager and self._pending_alert_info:
+                try:
+                    # Extract filename from path
+                    gif_path = gif_info.get('gif_path', '')
+                    gif_filename = os.path.basename(gif_path) if gif_path else f"cash_alert_{self.channel_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.gif"
+                    
+                    # Verify GIF file exists
+                    if gif_path and not os.path.exists(gif_path):
+                        logger.error(f"[{self.channel_id}] ❌ GIF file does not exist at path: {gif_path}")
+                        # Don't save to database if file doesn't exist
+                        self._pending_alert_info = None
+                        self._pending_snapshot_id = None
+                        self._pending_alert_timestamp = None
+                    else:
+                        # Convert absolute path to relative path for database
+                        if gif_path:
+                            normalized_path = gif_path.replace('\\', '/')
+                            if 'static/' in normalized_path:
+                                snapshot_path = normalized_path.split('static/')[1]
+                                snapshot_path = f"static/{snapshot_path}"
+                            else:
+                                snapshot_path = gif_path
+                        else:
+                            snapshot_path = None
+                        
+                        # Update CashSnapshot record with GIF path (if snapshot_id was set)
+                        # Also save to alert_gifs table for consistency
+                        gif_payload = {
+                            'gif_filename': gif_filename,
+                            'gif_path': gif_path,
+                            'frame_count': gif_info.get('frame_count', 0),
+                            'duration': gif_info.get('duration', 0.0)
+                        }
+                        
+                        alert_info = self._pending_alert_info
+                        alert_message = alert_info.get('message', 'Cash detection alert')
+                        
+                        # All database operations must be within app context
+                        if self.app:
+                            with self.app.app_context():
+                                # Update CashSnapshot record with GIF path (if snapshot_id was set)
+                                if self._pending_snapshot_id:
+                                    snapshot = self.db_manager.CashSnapshot.query.get(self._pending_snapshot_id)
+                                    if snapshot:
+                                        snapshot.snapshot_path = snapshot_path
+                                        snapshot.snapshot_filename = gif_filename
+                                        # Update file_size if GIF exists
+                                        if gif_path and os.path.exists(gif_path):
+                                            snapshot.file_size = os.path.getsize(gif_path)
+                                        self.db_manager.db.session.commit()
+                                        logger.info(f"[{self.channel_id}] ✅ Updated cash snapshot {self._pending_snapshot_id} with GIF path: {snapshot_path}")
+                                    else:
+                                        logger.warning(f"[{self.channel_id}] ⚠️ Cash snapshot {self._pending_snapshot_id} not found for update")
+                                else:
+                                    logger.info(f"[{self.channel_id}] ℹ️ No snapshot_id to update, saving to alert_gifs only")
+                                
+                                # Save to alert_gifs table
+                                self.db_manager.save_alert_gif(
+                                    self.channel_id,
+                                    'cash_detection_alert',
+                                    gif_payload,
+                                    alert_message=alert_message,
+                                    alert_data=alert_info
+                                )
+                                
+                                logger.info(f"[{self.channel_id}] ✅ Cash alert GIF saved to database: {gif_filename} (path: {gif_path})")
+                                # Clear stored alert info only after successful save
+                                self._pending_alert_info = None
+                                self._pending_snapshot_id = None
+                                self._pending_alert_timestamp = None
+                        else:
+                            logger.error(f"[{self.channel_id}] ❌ Cannot save GIF: app context not available")
+                except Exception as e:
+                    logger.error(f"[{self.channel_id}] ❌ Failed to save cash alert GIF to DB: {e}", exc_info=True)
+            else:
+                logger.error(f"[{self.channel_id}] ❌ Cannot save GIF: gif_info={gif_info is not None}, db_manager={self.db_manager is not None}, alert_info={self._pending_alert_info is not None}")
+        
+        # Track recording state for next frame (use state BEFORE adding frame, like queue_monitor)
+        # But if recording just stopped, use the current state (False) so we don't trigger completion again
+        if self._was_recording_alert and not is_recording_now:
+            # Recording just finished - set to False to prevent re-triggering
+            self._was_recording_alert = False
+        else:
+            # Normal case: use state before adding frame
+            self._was_recording_alert = was_recording
+        
         # Draw visualization
         vis_frame = self._draw_visualization(frame, detections, cash_detected, drawer_detected)
         
@@ -235,84 +417,131 @@ class CashDetection:
         }
     
     def _trigger_cash_alert(self, frame, detections, timestamp, cash_detected, drawer_detected):
-        """Trigger cash detection alert with snapshot when Cashdraw-open is detected"""
+        """Trigger cash detection alert with GIF recording when Cashdraw-open is detected"""
         self.total_alerts += 1
         
-        # Generate filename
         dt = datetime.fromtimestamp(timestamp)
-        filename = f"cash_{self.channel_id}_{dt.strftime('%Y%m%d_%H%M%S')}.jpg"
-        filepath = self.snapshot_dir / filename
         
-        # Save snapshot
-        try:
-            cv2.imwrite(str(filepath), frame)
-            file_size = os.path.getsize(filepath)
-            
-            logger.info(f"💰🗄️ ALERT: Cashdraw-open detected! Snapshot saved: {filename}")
-            
-            # Prepare alert data
-            alert_message = f"ALERT: Cashdraw-open detected"
-            alert_data = {
-                'detections': [
-                    {
-                        'bbox': d['bbox'],
-                        'confidence': float(d['confidence']),
-                        'class_name': d['class_name']
-                    }
-                    for d in detections
-                ],
-                'detection_count': len(detections),
-                'cash_detected': cash_detected,
-                'drawer_detected': drawer_detected,
-                'channel_id': self.channel_id
-            }
-            
-            # Save to database
-            if self.db_manager and self.app:
-                try:
-                    with self.app.app_context():
-                        snapshot_id = self.db_manager.save_cash_snapshot(
-                            channel_id=self.channel_id,
-                            snapshot_filename=filename,
-                            snapshot_path=str(filepath),
-                            alert_message=alert_message,
-                            alert_data=alert_data,
-                            file_size=file_size,
-                            detection_count=len(detections)
-                        )
-                        
-                        logger.info(f"Cash snapshot saved to database: ID {snapshot_id}")
-                        
-                        # Emit real-time notification
-                        self.socketio.emit('cash_detected', {
-                            'snapshot_id': snapshot_id,
-                            'channel_id': self.channel_id,
-                            'snapshot_filename': filename,
-                            'snapshot_url': f"/static/cash_snapshots/{filename}",
-                            'alert_message': alert_message,
-                            'detection_count': len(detections),
-                            'timestamp': dt.isoformat()
-                        })
-                        
-                except Exception as e:
-                    logger.error(f"Error saving cash snapshot to database: {e}")
-                    import traceback
-                    logger.error(traceback.format_exc())
-            
-            # Emit Socket.IO alert
-            self.socketio.emit('cash_alert', {
-                'channel_id': self.channel_id,
-                'alert_message': alert_message,
-                'detection_count': len(detections),
-                'snapshot_filename': filename,
-                'snapshot_url': f"/static/cash_snapshots/{filename}",
-                'timestamp': dt.isoformat()
-            })
-            
-        except Exception as e:
-            logger.error(f"Error saving cash snapshot: {e}")
-            import traceback
-            logger.error(traceback.format_exc())
+        # Prepare alert data
+        alert_message = f"ALERT: Cashdraw-open detected"
+        alert_data = {
+            'detections': [
+                {
+                    'bbox': d['bbox'],
+                    'confidence': float(d['confidence']),
+                    'class_name': d['class_name']
+                }
+                for d in detections
+            ],
+            'detection_count': len(detections),
+            'cash_detected': cash_detected,
+            'drawer_detected': drawer_detected,
+            'channel_id': self.channel_id
+        }
+        
+        # Check if a GIF is already recording - if so, skip this alert to avoid overwriting pending info
+        if self.gif_recorder.is_recording_alert:
+            logger.warning(f"[{self.channel_id}] 💰🗄️ ALERT: Cashdraw-open detected but GIF already recording - skipping to avoid overwriting pending alert info")
+            return
+        
+        # Also check if we have pending info from a previous alert that hasn't completed yet
+        # Only clear it if we're NOT currently recording AND enough time has passed (to avoid losing data for an in-progress GIF)
+        if self._pending_alert_info is not None:
+            if self.gif_recorder.is_recording_alert:
+                # This should have been caught by the first check, but just in case
+                logger.error(f"[{self.channel_id}] 💰🗄️ ALERT: Cashdraw-open detected but both _pending_alert_info is set AND recording is active - this should not happen! Skipping alert.")
+                return
+            elif self._pending_alert_timestamp is not None:
+                time_since_alert = time.time() - self._pending_alert_timestamp
+                if time_since_alert < 5.0:  # Less than 5 seconds (GIF takes 3 seconds, so this is safe)
+                    logger.warning(f"[{self.channel_id}] 💰🗄️ ALERT: Cashdraw-open detected but _pending_alert_info is set and only {time_since_alert:.1f}s have passed - previous GIF may still be processing. Skipping alert.")
+                    return
+                else:
+                    logger.warning(f"[{self.channel_id}] 💰🗄️ ALERT: Cashdraw-open detected but _pending_alert_info is set from {time_since_alert:.1f}s ago (recording not active) - clearing stale info.")
+                    # Clear old pending info to allow new alert (only if enough time has passed)
+                    self._pending_alert_info = None
+                    self._pending_snapshot_id = None
+                    self._pending_alert_timestamp = None
+            else:
+                # No timestamp, so clear it
+                logger.warning(f"[{self.channel_id}] 💰🗄️ ALERT: Cashdraw-open detected but _pending_alert_info is set without timestamp - clearing stale info.")
+                self._pending_alert_info = None
+                self._pending_snapshot_id = None
+        
+        # Start GIF recording for this alert
+        alert_info = {
+            'type': 'cash_detection_alert',
+            'message': alert_message,
+            'detection_count': len(detections),
+            'timestamp': dt.isoformat(),
+            **alert_data
+        }
+        
+        logger.info(f"[{self.channel_id}] 💰🗄️ ALERT: Cashdraw-open detected! Starting GIF recording...")
+        self.gif_recorder.start_alert_recording(alert_info)
+        # Store alert_info for database saving when GIF completes
+        self._pending_alert_info = alert_info
+        self._pending_snapshot_id = None  # Will be set when snapshot is saved
+        
+        self._pending_alert_timestamp = time.time()  # Track when this alert was triggered
+        logger.info(f"[{self.channel_id}] ✅ GIF recording started, _pending_alert_info set: message='{alert_message}', timestamp='{dt.isoformat()}'")
+        logger.info(f"[{self.channel_id}] 📊 GIF recorder state: is_recording_alert={self.gif_recorder.is_recording_alert}")
+        
+        # Save to database immediately (with placeholder snapshot_path - will be updated when GIF completes)
+        if self.db_manager and self.app:
+            try:
+                with self.app.app_context():
+                    # Generate placeholder filename (will be replaced with GIF filename)
+                    placeholder_filename = f"cash_{self.channel_id}_{dt.strftime('%Y%m%d_%H%M%S')}.gif"
+                    # Use a placeholder path since snapshot_path is NOT NULL in database
+                    # This will be updated with the actual GIF path when recording completes
+                    placeholder_path = f"static/cash_snapshots/{placeholder_filename}"
+                    
+                    snapshot_id = self.db_manager.save_cash_snapshot(
+                        channel_id=self.channel_id,
+                        snapshot_filename=placeholder_filename,
+                        snapshot_path=placeholder_path,  # Placeholder - will be updated when GIF completes
+                        alert_message=alert_message,
+                        alert_data=alert_data,
+                        file_size=0,  # Will be updated when GIF completes
+                        detection_count=len(detections)
+                    )
+                    
+                    # Store snapshot ID to update with GIF path later
+                    if snapshot_id:
+                        self._pending_snapshot_id = snapshot_id
+                        logger.info(f"[{self.channel_id}] Cash snapshot record created in database: ID {snapshot_id} (GIF recording in progress)")
+                    else:
+                        logger.warning(f"[{self.channel_id}] ⚠️ Cash snapshot save returned None - GIF will be saved to alert_gifs only")
+                        self._pending_snapshot_id = None
+                    
+                    # Emit real-time notification
+                    self.socketio.emit('cash_detected', {
+                        'snapshot_id': snapshot_id,
+                        'channel_id': self.channel_id,
+                        'snapshot_filename': placeholder_filename,
+                        'snapshot_url': None,  # Will be available when GIF completes
+                        'alert_message': alert_message,
+                        'detection_count': len(detections),
+                        'timestamp': dt.isoformat()
+                    })
+                    
+            except Exception as e:
+                logger.error(f"[{self.channel_id}] Error saving cash snapshot to database: {e}")
+                import traceback
+                logger.error(traceback.format_exc())
+                # Don't set _pending_snapshot_id if save failed - GIF will be saved to alert_gifs only
+                self._pending_snapshot_id = None
+        
+        # Emit Socket.IO alert
+        self.socketio.emit('cash_alert', {
+            'channel_id': self.channel_id,
+            'alert_message': alert_message,
+            'detection_count': len(detections),
+            'snapshot_filename': None,  # Will be available when GIF completes
+            'snapshot_url': None,
+            'timestamp': dt.isoformat()
+        })
     
     def _draw_visualization(self, frame, detections, cash_detected, drawer_detected):
         """Draw bounding boxes and detection info on frame"""

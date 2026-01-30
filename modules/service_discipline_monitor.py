@@ -35,6 +35,7 @@ except ImportError:
 
 from .model_manager import get_shared_model
 from .yolo_detector import YOLODetector
+from .gif_recorder import AlertGifRecorder
 
 logger = logging.getLogger(__name__)
 
@@ -145,6 +146,14 @@ class ServiceDisciplineMonitor:
         self.frame_count = 0
         self.total_alerts = 0
         self.last_update_time = time.time()
+        
+        # Initialize GIF recorder for alert snapshots
+        self.gif_recorder = AlertGifRecorder(buffer_size=90, gif_duration=3.0, fps=5)
+        
+        # Track recording state for GIF management
+        self._was_recording_alert = False
+        self._pending_alert_info = None  # Store alert info for database saving when GIF completes
+        self._pending_snapshot_id = None  # Store snapshot ID to update with GIF path when complete
 
         self.load_configuration()
 
@@ -769,6 +778,9 @@ class ServiceDisciplineMonitor:
             return frame
 
         try:
+            # Add frame to GIF recorder buffer (always running)
+            self.gif_recorder.add_frame(frame)
+            
             # Save a clean copy of the original frame for snapshots
             # This ensures snapshots don't include annotations from other modules (e.g., queue monitor text)
             clean_frame = frame.copy()
@@ -860,6 +872,97 @@ class ServiceDisciplineMonitor:
             if now_ts - self.last_update_time >= 1.0:
                 self._send_realtime_update()
                 self.last_update_time = now_ts
+            
+            # Handle GIF recording state (same pattern as queue_monitor and cash_detection)
+            was_recording = self.gif_recorder.is_recording_alert
+            
+            if was_recording:
+                # Add frame during alert recording
+                self.gif_recorder.add_alert_frame(frame)
+                # stop_alert_recording() is called automatically by add_alert_frame when duration is reached
+            
+            # Check if recording just finished (was recording, now stopped)
+            if self._was_recording_alert and not self.gif_recorder.is_recording_alert:
+                # Recording just finished - get GIF info and save to DB
+                logger.info(f"[{self.channel_id}] 🎬 GIF recording completed!")
+                
+                gif_info = self.gif_recorder.get_last_gif_info()
+                if gif_info and self.db_manager and self._pending_alert_info:
+                    try:
+                        # Extract filename from path
+                        gif_path = gif_info.get('gif_path', '')
+                        gif_filename = os.path.basename(gif_path) if gif_path else f"service_alert_{self.channel_id}_{datetime.now().strftime('%Y%m%d_%H%M%S')}.gif"
+                        
+                        # Convert absolute path to relative path for database
+                        if gif_path:
+                            normalized_path = gif_path.replace('\\', '/')
+                            if 'static/' in normalized_path:
+                                snapshot_path = normalized_path.split('static/')[1]
+                                snapshot_path = f"static/{snapshot_path}"
+                            else:
+                                snapshot_path = gif_path
+                        else:
+                            snapshot_path = None
+                        
+                        # Update TableServiceViolation record with GIF path (if snapshot_id was set)
+                        if self._pending_snapshot_id and self.app:
+                            with self.app.app_context():
+                                violation = self.db_manager.TableServiceViolation.query.get(self._pending_snapshot_id)
+                                if violation:
+                                    violation.snapshot_path = snapshot_path
+                                    violation.snapshot_filename = gif_filename
+                                    # Update file_size if GIF exists
+                                    if gif_path and os.path.exists(gif_path):
+                                        violation.file_size = os.path.getsize(gif_path)
+                                    self.db_manager.db.session.commit()
+                                    logger.info(f"[{self.channel_id}] ✅ Updated violation {self._pending_snapshot_id} with GIF path: {snapshot_path}")
+                                else:
+                                    logger.warning(f"[{self.channel_id}] ⚠️ Violation {self._pending_snapshot_id} not found for update")
+                        
+                        # Also save to alert_gifs table
+                        gif_payload = {
+                            'gif_filename': gif_filename,
+                            'gif_path': gif_path,
+                            'frame_count': gif_info.get('frame_count', 0),
+                            'duration': gif_info.get('duration', 0.0)
+                        }
+                        
+                        alert_info = self._pending_alert_info
+                        alert_message = f"Service discipline violation: Table {alert_info.get('table_id', 'unknown')} {alert_info.get('violation_type', 'violation')} = {alert_info.get('wait_time', 0):.1f}s"
+                        
+                        if self.app:
+                            with self.app.app_context():
+                                self.db_manager.save_alert_gif(
+                                    self.channel_id,
+                                    'service_discipline_alert',
+                                    gif_payload,
+                                    alert_message=alert_message,
+                                    alert_data=alert_info
+                                )
+                                
+                                # Now send Telegram alert with the actual GIF path
+                                if snapshot_path and os.path.exists(gif_path if gif_path else os.path.join("static", snapshot_path)):
+                                    from modules.database import _send_telegram_alert
+                                    _send_telegram_alert(
+                                        channel_id=self.channel_id,
+                                        alert_type='table_service_violation',
+                                        alert_message=alert_message,
+                                        snapshot_path=snapshot_path,
+                                        alert_data=alert_info
+                                    )
+                                    logger.info(f"[{self.channel_id}] ✅ Telegram alert sent with GIF: {gif_filename}")
+                                else:
+                                    logger.warning(f"[{self.channel_id}] ⚠️ GIF path not found, skipping Telegram alert: {snapshot_path}")
+                        
+                        logger.info(f"[{self.channel_id}] ✅ Service discipline alert GIF saved to database: {gif_filename}")
+                        # Clear stored alert info
+                        self._pending_alert_info = None
+                        self._pending_snapshot_id = None
+                    except Exception as e:
+                        logger.error(f"[{self.channel_id}] ❌ Failed to save service discipline alert GIF to DB: {e}", exc_info=True)
+            
+            # Track recording state for next frame
+            self._was_recording_alert = was_recording
             
             # Draw annotations
             annotated = self._draw_annotations_new(frame, current_time)
@@ -1329,19 +1432,27 @@ class ServiceDisciplineMonitor:
         elif frame.size == 0:
             logger.warning(f"[{self.channel_id}] ⚠️ Frame is empty when triggering alert for table {table_id}")
         else:
-            logger.info(f"[{self.channel_id}] 📸 Saving snapshot: frame shape={frame.shape}, table={table_id}, violation={violation_type}")
+            logger.info(f"[{self.channel_id}] 📸 Starting GIF recording: frame shape={frame.shape}, table={table_id}, violation={violation_type}")
         
-        snapshot_path = self._save_snapshot_new(table_id, customer, violation_type, wait_time, current_time, frame)
+        # Prepare alert info for GIF recording
+        alert_info = {
+            "type": "service_discipline_alert",
+            "table_id": table_id,
+            "violation_type": violation_type,
+            "wait_time": wait_time,
+            "channel_id": self.channel_id,
+            "timestamp": current_time.isoformat()
+        }
         
-        if not snapshot_path:
-            logger.error(
-                f"[{self.channel_id}] ❌ Failed to save snapshot for table {table_id} - snapshot_path is None. "
-                f"Alert will NOT be saved to database. Frame: {'valid' if frame is not None and frame.size > 0 else 'invalid'}"
-            )
-            # Don't save alert if snapshot failed - similar to material theft monitor
-            return
+        # Start GIF recording
+        logger.info(f"[{self.channel_id}] 🎬 Starting GIF recording for table {table_id}, violation={violation_type}")
+        self.gif_recorder.start_alert_recording(alert_info)
+        self._pending_alert_info = alert_info
+        self._pending_snapshot_id = None  # Will be set when violation is saved
         
-        logger.info(f"[{self.channel_id}] ✅ Snapshot saved successfully: {snapshot_path}")
+        # Use placeholder path initially - will be updated when GIF completes
+        placeholder_filename = f"service_{violation_type}_{table_id}_{self.channel_id}_{current_time.strftime('%Y%m%d_%H%M%S')}.gif"
+        snapshot_path = f"static/service_discipline/{placeholder_filename}"  # Placeholder - will be updated when GIF completes
         
         # Calculate order_wait_time and service_wait_time at violation time
         # These might not be set in customer dict yet if violation happens before events occur
@@ -1378,6 +1489,7 @@ class ServiceDisciplineMonitor:
         # Log calculated values for debugging
         logger.info(f"[{self.channel_id}] 📊 Calculated wait times for violation: order_wait_time={order_wait_time}, service_wait_time={service_wait_time}, violation_type={violation_type}")
         
+        # Store alert data (will be used when GIF completes)
         alert_data = {
             "violation_type": violation_type,
             "wait_time": wait_time,
@@ -1388,6 +1500,9 @@ class ServiceDisciplineMonitor:
             "order_wait_time": order_wait_time,  # Use calculated value
             "service_wait_time": service_wait_time  # Use calculated value
         }
+        
+        # Update pending alert info with full data
+        self._pending_alert_info.update(alert_data)
         
         self.total_alerts += 1
         
@@ -1415,21 +1530,13 @@ class ServiceDisciplineMonitor:
                             channel_id=self.channel_id,
                             table_id=table_id,
                             waiting_time=wait_time,
-                            snapshot_path=snapshot_path,
+                            snapshot_path=snapshot_path,  # Placeholder - will be updated when GIF completes
                             timestamp=current_time,
-                            alert_data={
-                                "violation_type": violation_type,
-                                "wait_time": wait_time,
-                                "T_seated": customer.get("T_seated"),
-                                "T_order_start": customer.get("T_order_start"),
-                                "T_order_end": customer.get("T_order_end"),
-                                "T_food_served": customer.get("T_food_served"),
-                                "order_wait_time": order_wait_time,  # Use calculated value
-                                "service_wait_time": service_wait_time  # Use calculated value
-                            }
+                            alert_data=alert_data
                         )
                         if result:
-                            logger.info(f"[{self.channel_id}] ✅ Violation saved to table_service_violations: ID={result}, order_wait={order_wait_time}, service_wait={service_wait_time}")
+                            self._pending_snapshot_id = result  # Store ID to update with GIF path later
+                            logger.info(f"[{self.channel_id}] ✅ Violation saved to table_service_violations: ID={result}, order_wait={order_wait_time}, service_wait={service_wait_time} (GIF recording in progress)")
                         else:
                             logger.error(f"[{self.channel_id}] ❌ Failed to save violation: add_table_service_violation returned None")
                 else:
